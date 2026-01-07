@@ -1,29 +1,29 @@
 # LPR Baseline
 
-Multi-Frame License Plate Recognition using CRNN with Attention-based Temporal Fusion.
+Multi-Frame License Plate Recognition using Swin Transformer and Ref-Aware Temporal Fusion.
 
 ## Features
 
-- **Multi-frame input**: Uses 5 frames per sample for robust recognition
-- **Attention Fusion**: Learnable attention weights for temporal feature fusion
-- **Synthetic Degradation**: Augments HR images with blur, noise, and compression
-- **CTC Loss**: Handles variable-length license plate text
+- **Swin Transformer Backbone**: Uses Swin-Tiny for efficient and powerful spatial feature extraction.
+- **Multi-frame input**: Supports dynamic frame counts (default 5) for robust recognition.
+- **Ref-Aware Fusion**: Learns attention weights relative to a reference frame for stable temporal fusion.
+- **Transformer Encoder**: High-capacity sequence modeling using Transformer architecture.
+- **Synthetic Degradation**: Augments images with blur, noise, and compression for robustness.
+- **CTC Loss**: Handles variable-length license plate text effectively.
 
 ## Project Structure
 
 ```
 lpr_baseline/
-├── __init__.py         # Package exports
-├── config.py           # Configuration
-├── transforms.py       # Data augmentation
-├── dataset.py          # Dataset class
-├── utils.py            # Utilities
-├── train.py            # Training script
-├── requirements.txt
+├── config.py           # Hyperparameters and paths
+├── transforms.py       # Data augmentation pipeline
+├── dataset.py          # Advanced multi-frame dataset loading
+├── train.py            # Training script with AMP and Gradient Clipping
+├── test.py             # Evaluation script
+├── verify_fix.py       # Model sanity check script
 └── models/
-    ├── __init__.py
-    ├── fusion.py       # AttentionFusion
-    └── crnn.py         # MultiFrameCRNN
+    ├── fusion.py       # RefAwareFusion, ChannelSpatialFusion, etc.
+    └── crnn.py         # MultiFrameCRNN (Swin + Transformer)
 ```
 
 ## Installation
@@ -32,8 +32,6 @@ lpr_baseline/
 pip install -r requirements.txt
 ```
 
-## Usage
-
 1. **Configure data path** in `config.py`:
    ```python
    DATA_ROOT = "path/to/your/data"
@@ -41,8 +39,12 @@ pip install -r requirements.txt
 
 2. **Run training**:
    ```bash
-   cd lpr_baseline
    python train.py
+   ```
+
+3. **Verify model setup**:
+   ```bash
+   python verify_fix.py
    ```
 
 ## Data Format
@@ -61,15 +63,19 @@ data/train/
 ## Model Architecture
 
 ```
-Input [B, 5, 3, 32, 128]
+Input [Batch, T, 3, 32, 128]
     ↓
-CNN Backbone (7 layers) → [B*5, 512, 1, W]
+Swin Tiny Backbone → [B*T, 768, 1, 4]
     ↓
-AttentionFusion → [B, 512, W]
+Conv Projection & Upsampling → [B*T, 512, 1, 16]
     ↓
-BiLSTM (2 layers) → [B, W, 512]
+Ref-Aware Fusion (Temporal) → [B, 512, 1, 16]
     ↓
-FC + LogSoftmax → [B, W, 38]
+Sequence Formatting → [B, 16, 512]
+    ↓
+Transformer Encoder (8 layers) → [B, 16, 512]
+    ↓
+FC + LogSoftmax → [B, 16, num_classes]
 ```
 
 ## License

@@ -74,10 +74,14 @@ def train_pipeline():
     criterion = nn.CTCLoss(blank=0, zero_infinity=True)
     optimizer = optim.AdamW(model.parameters(), lr=Config.LEARNING_RATE, weight_decay=1e-4)
     scheduler = optim.lr_scheduler.OneCycleLR(
-        optimizer, 
-        max_lr=Config.LEARNING_RATE, 
-        steps_per_epoch=len(train_loader), 
-        epochs=Config.EPOCHS
+        optimizer,
+        max_lr=Config.LEARNING_RATE,
+        steps_per_epoch=len(train_loader),
+        epochs=Config.EPOCHS,
+        pct_start=0.3,          
+        div_factor=25.0,         
+        final_div_factor=1000.0, 
+        anneal_strategy='cos'    
     )
     scaler = GradScaler()
 

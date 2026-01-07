@@ -2,7 +2,6 @@ import os
 import glob
 import json
 import random
-
 import cv2
 import numpy as np
 import torch
@@ -30,7 +29,7 @@ class AdvancedMultiFrameDataset(Dataset):
         Args:
             root_dir: Path to data directory containing track_* folders
             mode: 'train' or 'val'
-            split_ratio: Ratio of data to use for training
+            split_ratio: Ratio of data to use for training (only used if split file doesn't exist)
         """
         self.mode = mode
         self.samples = []
@@ -51,6 +50,7 @@ class AdvancedMultiFrameDataset(Dataset):
             print("❌ LỖI: Không tìm thấy data.")
             return
 
+        # Split tracks into train/val
         train_tracks, val_tracks = self._split_tracks(all_tracks, split_ratio)
         
         selected_tracks = train_tracks if mode == 'train' else val_tracks
