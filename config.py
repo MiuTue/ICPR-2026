@@ -18,7 +18,7 @@ class Config:
     
     # Training hyperparameters
     BATCH_SIZE = 64
-    LEARNING_RATE = 0.0008
+    LEARNING_RATE = 0.0005
     EPOCHS = 50
     SEED = 42
     NUM_WORKERS = 4
