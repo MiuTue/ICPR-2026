@@ -78,7 +78,7 @@ def train_pipeline():
         max_lr=Config.LEARNING_RATE,
         steps_per_epoch=len(train_loader),
         epochs=Config.EPOCHS,
-        pct_start=0.3,          
+        pct_start=0.1,          
         div_factor=25.0,         
         final_div_factor=1000.0, 
         anneal_strategy='cos'    
@@ -89,6 +89,12 @@ def train_pipeline():
     
     # Training loop
     for epoch in range(Config.EPOCHS):
+        # Freezing/Unfreezing logic
+        if epoch < 5:
+            model.freeze_backbone(True)
+        elif epoch == 5:
+            model.freeze_backbone(False)
+            
         model.train()
         epoch_loss = 0
         
@@ -147,7 +153,9 @@ def train_pipeline():
                     )
                     val_loss += loss.item()
                     
-                    decoded = decode_predictions(torch.argmax(preds, dim=2), Config.IDX2CHAR)
+                    # Use Greedy during training validation to save time.
+                    # Only use Beam Search in final test.py
+                    decoded = decode_predictions(preds, Config.IDX2CHAR, beam_width=1)
                     for i in range(len(labels_text)):
                         if decoded[i] == labels_text[i]:
                             total_correct += 1

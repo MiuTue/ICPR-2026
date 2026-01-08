@@ -31,10 +31,16 @@ class MultiFrameCRNN(nn.Module):
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model, nhead=8, dim_feedforward=d_model*4, dropout=0.1, batch_first=True
         )
-        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=8)
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=6)
 
         # Output Layer
         self.fc = nn.Linear(d_model, num_classes)
+
+    def freeze_backbone(self, freeze=True):
+        """Freeze or unfreeze the backbone weights."""
+        for param in self.backbone.parameters():
+            param.requires_grad = not freeze
+        print(f"❄️ Swin Backbone: {'Frozen' if freeze else 'Unfrozen'}")
 
     def forward(self, x):
         # Input shape: [Batch, Frames, Channels, Height, Width]

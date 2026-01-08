@@ -10,16 +10,16 @@ class Config:
     VAL_SPLIT_FILE = "val_tracks.json"
     
     # Image settings
-    IMG_HEIGHT = 32
-    IMG_WIDTH = 128
+    IMG_HEIGHT = 64
+    IMG_WIDTH = 256
     
     # Character set
     CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-"
     
     # Training hyperparameters
-    BATCH_SIZE = 128
-    LEARNING_RATE = 0.0005
-    EPOCHS = 80
+    BATCH_SIZE = 64
+    LEARNING_RATE = 0.0008
+    EPOCHS = 50
     SEED = 42
     NUM_WORKERS = 4
     

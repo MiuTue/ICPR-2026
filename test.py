@@ -44,7 +44,16 @@ def test_pipeline():
     if os.path.exists("best_model.pth"):
         # Load best model
         print(f"📂 Loading weights from 'best_model.pth'...")
-        model.load_state_dict(torch.load("best_model.pth", weights_only=True, map_location=Config.DEVICE))
+        # Sử dụng strict=False để tránh lỗi khi đổi kiến trúc, 
+        # nhưng cảnh báo người dùng nếu có mismatch quan trọng.
+        checkpoint = torch.load("best_model.pth", weights_only=True, map_location=Config.DEVICE)
+        missing_keys, unexpected_keys = model.load_state_dict(checkpoint, strict=False)
+        
+        if missing_keys or unexpected_keys:
+            print("⚠️ CẢNH BÁO: Phát hiện sự sai khác giữa Checkpoint và Model!")
+            if missing_keys: print(f"   - Thiếu (nên train lại): {missing_keys[:3]}...")
+            if unexpected_keys: print(f"   - Thừa (checkpoint cũ?): {unexpected_keys[:3]}...")
+        
         model.eval()
 
         test_correct = 0
@@ -58,7 +67,10 @@ def test_pipeline():
             for images, targets, target_lengths, labels_text in tqdm(test_loader, desc="Testing"):
                 images = images.to(Config.DEVICE)
                 preds = model(images)
-                decoded = decode_predictions(torch.argmax(preds, dim=2), Config.IDX2CHAR)
+                
+                # SỬA: Sử dụng Beam Search để tăng Accuracy
+                # preds cần log_softmax nếu dùng beam_width > 1
+                decoded = decode_predictions(preds.log_softmax(2), Config.IDX2CHAR, beam_width=5)
 
                 for i in range(len(labels_text)):
                     gt = labels_text[i]

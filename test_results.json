@@ -1,0 +1,88 @@
+{
+  "test_accuracy": 0.0,
+  "char_accuracy": 11.245389952701435,
+  "total_samples": 4000,
+  "correct_samples": 0,
+  "sample_errors": [
+    {
+      "gt": "JHN1164",
+      "pred": "JQR5F13131J3"
+    },
+    {
+      "gt": "MJH2624",
+      "pred": "AEB4H281A8"
+    },
+    {
+      "gt": "ATX4501",
+      "pred": "AZL3D4191A9"
+    },
+    {
+      "gt": "AQH8133",
+      "pred": "AUQ0D031A8"
+    },
+    {
+      "gt": "ARI1869",
+      "pred": "AUE1D131AB9"
+    },
+    {
+      "gt": "BAT4577",
+      "pred": "AE4E5831B168"
+    },
+    {
+      "gt": "BBY9145",
+      "pred": "AUB1C51D1818B"
+    },
+    {
+      "gt": "BBV0583",
+      "pred": "BAE1D2890B8"
+    },
+    {
+      "gt": "AXH7487",
+      "pred": "AUB1D231818"
+    },
+    {
+      "gt": "ARH9564",
+      "pred": "AUB0H5381UA8"
+    },
+    {
+      "gt": "AWR5185",
+      "pred": "AAR1D518A89"
+    },
+    {
+      "gt": "AZK2794",
+      "pred": "AZB1D3318184"
+    },
+    {
+      "gt": "AUK3490",
+      "pred": "AUS797131A89"
+    },
+    {
+      "gt": "AXT9585",
+      "pred": "AAE1D2UD1A4"
+    },
+    {
+      "gt": "BEQ2801",
+      "pred": "BCL099808189"
+    },
+    {
+      "gt": "BAH8669",
+      "pred": "AUL0H289818"
+    },
+    {
+      "gt": "AYF5736",
+      "pred": "AUR1C21I18A6F"
+    },
+    {
+      "gt": "AZF6353",
+      "pred": "ALB0D5131A8"
+    },
+    {
+      "gt": "PQL5798",
+      "pred": "IUL0C513I1818"
+    },
+    {
+      "gt": "ASP7604",
+      "pred": "AUB4H71AI18A8F"
+    }
+  ]
+}
