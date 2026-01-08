@@ -22,13 +22,16 @@ def get_train_transforms():
             A.RandomBrightnessContrast(brightness_limit=0.3, contrast_limit=0.3, p=1.0),
             A.CLAHE(clip_limit=4.0, tile_grid_size=(8, 8), p=1.0),
             A.HueSaturationValue(hue_shift_limit=20, sat_shift_limit=30, val_shift_limit=20, p=1.0),
-        ], p=0.6),
+            A.RandomGamma(gamma_limit=(80, 120), p=1.0),
+            A.RGBShift(r_shift_limit=15, g_shift_limit=15, b_shift_limit=15, p=1.0),
+        ], p=0.7),
         A.OneOf([
             A.GaussianBlur(blur_limit=(3, 5), p=1.0),
             A.MotionBlur(blur_limit=(3, 7), p=1.0),
             A.GaussNoise(std_range=(0.1, 0.5), p=1.0),
             A.ISONoise(color_shift=(0.01, 0.05), intensity=(0.1, 0.5), p=1.0),
-        ], p=0.5),
+            A.MultiplicativeNoise(multiplier=(0.9, 1.1), p=1.0),
+        ], p=0.6),
         A.CoarseDropout(
             num_holes_range=(2, 8),
             hole_height_range=(4, 8),

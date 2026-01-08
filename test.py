@@ -41,12 +41,12 @@ def test_pipeline():
     # Initialize Model
     model = MultiFrameCRNN(num_classes=Config.NUM_CLASSES).to(Config.DEVICE)
     
-    if os.path.exists("best_model.pth"):
+    if os.path.exists("best_model2.pth"):
         # Load best model
-        print(f"📂 Loading weights from 'best_model.pth'...")
+        print(f"📂 Loading weights from 'best_model2.pth'...")
         # Sử dụng strict=False để tránh lỗi khi đổi kiến trúc, 
         # nhưng cảnh báo người dùng nếu có mismatch quan trọng.
-        checkpoint = torch.load("best_model.pth", weights_only=True, map_location=Config.DEVICE)
+        checkpoint = torch.load("best_model2.pth", weights_only=True, map_location=Config.DEVICE)
         missing_keys, unexpected_keys = model.load_state_dict(checkpoint, strict=False)
         
         if missing_keys or unexpected_keys:
@@ -70,7 +70,7 @@ def test_pipeline():
                 
                 # SỬA: Sử dụng Beam Search để tăng Accuracy
                 # preds cần log_softmax nếu dùng beam_width > 1
-                decoded = decode_predictions(preds.log_softmax(2), Config.IDX2CHAR, beam_width=5)
+                decoded = decode_predictions(preds.log_softmax(2), Config.IDX2CHAR, beam_width=3)
 
                 for i in range(len(labels_text)):
                     gt = labels_text[i]
@@ -100,7 +100,7 @@ def test_pipeline():
 
         if results:
             print(f"\n🔍 Sample Errors (first 10):")
-            for i, r in enumerate(results[:10]):
+            for i, r in enumerate(results[10:21]):
                 print(f"   {i+1}. GT: '{r['gt']}' | Pred: '{r['pred']}'")
 
         # Lưu kết quả vào file

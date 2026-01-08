@@ -53,10 +53,15 @@ def decode_predictions(preds, idx2char, beam_width=1):
 
 def ctc_beam_search_decode(log_probs, idx2char, beam_width=10):
     """
-    Standard CTC Beam Search decoding.
+    Standard CTC Beam Search decoding with Top-K optimization.
     """
     batch_size, seq_len, num_classes = log_probs.size()
     results = []
+
+    # Pre-select top candidates per step to speed up inner loops
+    # Taking top min(beam_width * 2, num_classes) candidates
+    topk_k = min(beam_width * 2, num_classes)
+    topk_log_probs, topk_indices = log_probs.topk(topk_k, dim=2)
 
     for b in range(batch_size):
         # beams: {prefix: (p_blank, p_nonblank)}
@@ -65,25 +70,26 @@ def ctc_beam_search_decode(log_probs, idx2char, beam_width=10):
         for t in range(seq_len):
             new_beams = {}
             
+            # Use pre-computed top-k candidates for this batch and time step
+            step_topk_log_probs = topk_log_probs[b, t]
+            step_topk_indices = topk_indices[b, t]
+            
             for prefix, (p_b, p_nb) in beams.items():
-                for char_idx in range(num_classes):
-                    char_log_prob = log_probs[b, t, char_idx].item()
+                for k in range(topk_k):
+                    char_idx = step_topk_indices[k].item()
+                    char_log_prob = step_topk_log_probs[k].item()
                     
                     if char_idx == 0: # Blank
-                        # Stay on same prefix, update blank probability
                         curr_p_b, curr_p_nb = new_beams.get(prefix, (-float('inf'), -float('inf')))
                         p_total = np.logaddexp(p_b, p_nb)
                         new_beams[prefix] = (np.logaddexp(curr_p_b, p_total + char_log_prob), curr_p_nb)
                     else:
                         new_prefix = prefix + (char_idx,)
-                        
                         if len(prefix) > 0 and char_idx == prefix[-1]:
                             # Repeat character
-                            # 1. Stay on same prefix (collapse)
                             curr_p_b, curr_p_nb = new_beams.get(prefix, (-float('inf'), -float('inf')))
                             new_beams[prefix] = (curr_p_b, np.logaddexp(curr_p_nb, p_nb + char_log_prob))
                             
-                            # 2. Transition to new prefix (if separated by blank)
                             n_p_b, n_p_nb = new_beams.get(new_prefix, (-float('inf'), -float('inf')))
                             new_beams[new_prefix] = (n_p_b, np.logaddexp(n_p_nb, p_b + char_log_prob))
                         else:

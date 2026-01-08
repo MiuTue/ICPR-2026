@@ -11,6 +11,7 @@ import os
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import numpy as np
 from torch.utils.data import DataLoader
 from torch.amp import autocast, GradScaler
 from tqdm import tqdm
@@ -89,11 +90,15 @@ def train_pipeline():
     
     # Training loop
     for epoch in range(Config.EPOCHS):
-        # Freezing/Unfreezing logic
+        # Stochastic Freezing logic
         if epoch < 5:
             model.freeze_backbone(True)
-        elif epoch == 5:
-            model.freeze_backbone(False)
+        else:
+            # Sau epoch 5, áp dụng đóng băng ngẫu nhiên (ví dụ 20% xác suất)
+            # Điều này giúp head (Transformer) không bị quá phụ thuộc vào backbone
+            # và đóng vai trò như một bộ điều hòa (Regularization)
+            should_freeze = np.random.random() < 0.2
+            model.freeze_backbone(should_freeze)
             
         model.train()
         epoch_loss = 0
@@ -102,18 +107,43 @@ def train_pipeline():
         for images, targets, target_lengths, _ in pbar:
             images = images.to(Config.DEVICE)
             targets = targets.to(Config.DEVICE)
+            target_lengths = target_lengths.to(Config.DEVICE)
             
             optimizer.zero_grad(set_to_none=True)
             
+            # Apply Mixup with 50% probability
+            use_mixup = np.random.random() < 0.5
+            if use_mixup:
+                # Prepare mixed data
+                lam = np.random.beta(1.0, 1.0)
+                index = torch.randperm(images.size(0)).to(Config.DEVICE)
+                
+                mixed_images = lam * images + (1 - lam) * images[index]
+                
+                # Prepare second set of targets for CTC
+                y_list = torch.split(targets, target_lengths.tolist())
+                y_list2 = [y_list[i] for i in index]
+                targets2 = torch.cat(y_list2)
+                target_lengths2 = target_lengths[index]
+            else:
+                mixed_images = images
+                lam = 1.0
+
             with autocast('cuda'):
-                preds = model(images)
+                preds = model(mixed_images)
                 preds_permuted = preds.permute(1, 0, 2)
                 input_lengths = torch.full(
                     size=(images.size(0),), 
                     fill_value=preds.size(1), 
                     dtype=torch.long
                 )
-                loss = criterion(preds_permuted, targets, input_lengths, target_lengths)
+                
+                if use_mixup:
+                    loss1 = criterion(preds_permuted, targets, input_lengths, target_lengths)
+                    loss2 = criterion(preds_permuted, targets2, input_lengths, target_lengths2)
+                    loss = lam * loss1 + (1 - lam) * loss2
+                else:
+                    loss = criterion(preds_permuted, targets, input_lengths, target_lengths)
 
             scaler_scale_before = scaler.get_scale()
             scaler.scale(loss).backward()
