@@ -68,9 +68,9 @@ def test_pipeline():
                 images = images.to(Config.DEVICE)
                 preds = model(images)
                 
-                # SỬA: Sử dụng Beam Search để tăng Accuracy
+                # SỬA: Sử dụng Beam Search và Format Filter để tăng Accuracy
                 # preds cần log_softmax nếu dùng beam_width > 1
-                decoded = decode_predictions(preds.log_softmax(2), Config.IDX2CHAR, beam_width=3)
+                decoded = decode_predictions(preds.log_softmax(2), Config.IDX2CHAR, beam_width=5, use_format_filter=True)
 
                 for i in range(len(labels_text)):
                     gt = labels_text[i]

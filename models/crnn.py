@@ -4,9 +4,9 @@ import torch.nn.functional as F
 from torchvision.models import swin_t, Swin_T_Weights
 
 try:
-    from .fusion import ChannelSpatialFusion, PositionalEncoding, RefAwareFusion
+    from .fusion import ChannelSpatialFusion, PositionalEncoding, RefAwareFusion, HybridAttentionFusion
 except ImportError:
-    from fusion import ChannelSpatialFusion, PositionalEncoding, RefAwareFusion
+    from fusion import ChannelSpatialFusion, PositionalEncoding, RefAwareFusion, HybridAttentionFusion
 
 
 class MultiFrameCRNN(nn.Module):
@@ -24,7 +24,7 @@ class MultiFrameCRNN(nn.Module):
             nn.ReLU()
         )
 
-        self.fusion = RefAwareFusion(channels=d_model)
+        self.fusion = HybridAttentionFusion(channels=d_model)
         self.pos_encoder = PositionalEncoding(d_model=d_model)
 
         # Transformer Encoder

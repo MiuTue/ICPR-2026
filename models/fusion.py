@@ -132,3 +132,82 @@ class AttentionFusion(nn.Module):
         # Apply softmax and weighted sum
         att_map = F.softmax(scores, dim=1)
         return torch.sum(x_view * att_map, dim=1)
+
+
+class HybridAttentionFusion(nn.Module):
+    """
+    Advanced Spatio-Temporal Hybrid Attention Fusion.
+    1. Temporal Gating: Identifies high-quality frames globally.
+    2. Ref-Aware Spatial Attention: Compares spatial features to a reference frame.
+    3. Channel Attention: Refines the fused feature map channel-wise.
+    """
+    def __init__(self, channels):
+        super().__init__()
+        # Global Temporal Gating
+        self.temporal_pool = nn.AdaptiveAvgPool2d(1)
+        self.temporal_gate = nn.Sequential(
+            nn.Linear(channels, channels // 4),
+            nn.ReLU(True),
+            nn.Linear(channels // 4, 1),
+            nn.Sigmoid()
+        )
+        
+        # Spatial Scoring Network
+        self.spatial_net = nn.Sequential(
+            nn.Conv2d(channels * 2, channels // 2, 3, 1, 1),
+            nn.BatchNorm2d(channels // 2),
+            nn.ReLU(True),
+            nn.Conv2d(channels // 2, 1, 3, 1, 1)
+        )
+        
+        # Channel Gate (Post-fusion)
+        self.channel_gate = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(channels, channels // 4, 1),
+            nn.ReLU(True),
+            nn.Conv2d(channels // 4, channels, 1),
+            nn.Sigmoid()
+        )
+        
+        # Explicit Initialization
+        self._init_weights()
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, 0, 0.01)
+                nn.init.constant_(m.bias, 0)
+
+    def forward(self, x, t):
+        bt, c, h, w = x.size()
+        b = bt // t
+        x_view = x.view(b, t, c, h, w)
+        
+        # 1. Global Temporal Gating (Score per frame)
+        pooled = self.temporal_pool(x).view(bt, c)
+        t_weights = self.temporal_gate(pooled).view(b, t, 1, 1, 1)
+        
+        # 2. Ref-Aware Spatial Attention
+        ref_idx = t // 2
+        ref = x_view[:, ref_idx:ref_idx+1].repeat(1, t, 1, 1, 1)
+        concat_feat = torch.cat([x_view, ref], dim=2).view(bt, c*2, h, w)
+        s_scores = self.spatial_net(concat_feat).view(b, t, 1, h, w)
+        
+        # Combine global frame quality with local spatial scores
+        # Modulation approach: low quality frames get suppressed before softmax
+        combined_scores = s_scores * t_weights
+        
+        # Weighted Aggregation
+        att_map = F.softmax(combined_scores, dim=1)
+        fused = torch.sum(x_view * att_map, dim=1) # [B, C, H, W]
+        
+        # 3. Channel Attention Refinement
+        c_att = self.channel_gate(fused)
+        return fused * c_att

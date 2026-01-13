@@ -79,9 +79,9 @@ def train_pipeline():
         max_lr=Config.LEARNING_RATE,
         steps_per_epoch=len(train_loader),
         epochs=Config.EPOCHS,
-        pct_start=0.1,          
-        div_factor=25.0,         
-        final_div_factor=1000.0, 
+        pct_start=0.3, # Tăng thời gian warmup lên 30% tổng số bước
+        div_factor=20.0,
+        final_div_factor=1000.0,
         anneal_strategy='cos'    
     )
     scaler = GradScaler()
@@ -97,7 +97,7 @@ def train_pipeline():
             # Sau epoch 5, áp dụng đóng băng ngẫu nhiên (ví dụ 20% xác suất)
             # Điều này giúp head (Transformer) không bị quá phụ thuộc vào backbone
             # và đóng vai trò như một bộ điều hòa (Regularization)
-            should_freeze = np.random.random() < 0.2
+            should_freeze = np.random.random() < 0.3
             model.freeze_backbone(should_freeze)
             
         model.train()
@@ -111,8 +111,8 @@ def train_pipeline():
             
             optimizer.zero_grad(set_to_none=True)
             
-            # Apply Mixup with 50% probability
-            use_mixup = np.random.random() < 0.5
+            # Apply Mixup with 30% probability
+            use_mixup = np.random.random() < 0.3
             if use_mixup:
                 # Prepare mixed data
                 lam = np.random.beta(1.0, 1.0)
@@ -147,6 +147,11 @@ def train_pipeline():
 
             scaler_scale_before = scaler.get_scale()
             scaler.scale(loss).backward()
+            
+            # Giải phóng gradient bị quá lớn (Gradient Clipping)
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=2.0)
+            
             scaler.step(optimizer)
             scaler.update()
             
