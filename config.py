@@ -19,8 +19,8 @@ class Config:
     
     # Training hyperparameters
     BATCH_SIZE = 64
-    LEARNING_RATE = 0.0003 # Giảm LR để ổn định hơn với batch size 64
-    EPOCHS = 100 # Tăng Epochs để model hội tụ từ từ
+    LEARNING_RATE = 0.0003 # Hạ LR xuống 0.0003 để triệt tiêu lỗi NaN loss hoàn toàn
+    EPOCHS = 80 # Giữ nguyên 80 epochs cho lộ trình hội tụ ổn định
     SEED = 42
     NUM_WORKERS = 4
     

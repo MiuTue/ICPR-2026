@@ -73,14 +73,14 @@ def train_pipeline():
     # Initialize model, loss, optimizer
     model = MultiFrameCRNN(num_classes=Config.NUM_CLASSES).to(Config.DEVICE)
     criterion = nn.CTCLoss(blank=0, zero_infinity=True)
-    optimizer = optim.AdamW(model.parameters(), lr=Config.LEARNING_RATE, weight_decay=1e-4)
+    optimizer = optim.AdamW(model.parameters(), lr=Config.LEARNING_RATE, weight_decay=1e-3) # Tăng Weight Decay để điều hòa weights tốt hơn
     scheduler = optim.lr_scheduler.OneCycleLR(
         optimizer,
         max_lr=Config.LEARNING_RATE,
         steps_per_epoch=len(train_loader),
         epochs=Config.EPOCHS,
         pct_start=0.3, # Tăng thời gian warmup lên 30% tổng số bước
-        div_factor=20.0,
+        div_factor=25.0, # Khởi đầu từ LR thấp hơn (max_lr / 25)
         final_div_factor=1000.0,
         anneal_strategy='cos'    
     )
@@ -94,9 +94,7 @@ def train_pipeline():
         if epoch < 5:
             model.freeze_backbone(True)
         else:
-            # Sau epoch 5, áp dụng đóng băng ngẫu nhiên (ví dụ 20% xác suất)
-            # Điều này giúp head (Transformer) không bị quá phụ thuộc vào backbone
-            # và đóng vai trò như một bộ điều hòa (Regularization)
+            # Sau epoch 5, áp dụng đóng băng ngẫu nhiên (ví dụ 30% xác suất)
             should_freeze = np.random.random() < 0.3
             model.freeze_backbone(should_freeze)
             
@@ -112,7 +110,7 @@ def train_pipeline():
             optimizer.zero_grad(set_to_none=True)
             
             # Apply Mixup with 30% probability
-            use_mixup = np.random.random() < 0.3
+            use_mixup = np.random.random() < 0.15
             if use_mixup:
                 # Prepare mixed data
                 lam = np.random.beta(1.0, 1.0)
@@ -150,7 +148,7 @@ def train_pipeline():
             
             # Giải phóng gradient bị quá lớn (Gradient Clipping)
             scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=2.0)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0) # Siết chặt clipping để tránh bùng nổ gradient
             
             scaler.step(optimizer)
             scaler.update()
@@ -178,6 +176,8 @@ def train_pipeline():
                 for images, targets, target_lengths, labels_text in val_loader:
                     images = images.to(Config.DEVICE)
                     targets = targets.to(Config.DEVICE)
+                    target_lengths = target_lengths.to(Config.DEVICE)
+                    
                     preds = model(images)
                     
                     loss = criterion(

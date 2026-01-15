@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torchvision.models import swin_t, Swin_T_Weights
+from torchvision.models import convnext_tiny, ConvNeXt_Tiny_Weights
 
 try:
     from .fusion import ChannelSpatialFusion, PositionalEncoding, RefAwareFusion, HybridAttentionFusion
@@ -12,9 +12,9 @@ except ImportError:
 class MultiFrameCRNN(nn.Module):
     def __init__(self, num_classes, d_model=512):
         super().__init__()
-        # Backbone Swin Transformer (Tiny version for speed)
-        swin = swin_t(weights=Swin_T_Weights.DEFAULT)
-        self.backbone = swin.features # Output channels: 768
+        # Backbone ConvNeXt Tiny
+        convnext = convnext_tiny(weights=ConvNeXt_Tiny_Weights.DEFAULT)
+        self.backbone = convnext.features # Output channels: 768
 
         self.conv_proj = nn.Sequential(
             # Upsample Width by 4x to ensure enough time-steps for CTC
@@ -29,7 +29,7 @@ class MultiFrameCRNN(nn.Module):
 
         # Transformer Encoder
         encoder_layer = nn.TransformerEncoderLayer(
-            d_model=d_model, nhead=8, dim_feedforward=d_model*4, dropout=0.1, batch_first=True
+            d_model=d_model, nhead=8, dim_feedforward=d_model*4, dropout=0.15, batch_first=True
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=6)
 
@@ -40,7 +40,7 @@ class MultiFrameCRNN(nn.Module):
         """Freeze or unfreeze the backbone weights."""
         for param in self.backbone.parameters():
             param.requires_grad = not freeze
-        print(f"❄️ Swin Backbone: {'Frozen' if freeze else 'Unfrozen'}")
+        print(f"❄️ ConvNeXt Backbone: {'Frozen' if freeze else 'Unfrozen'}")
 
     def forward(self, x):
         # Input shape: [Batch, Frames, Channels, Height, Width]
@@ -50,8 +50,7 @@ class MultiFrameCRNN(nn.Module):
         x = x.view(b * t, c, h, w)
 
         # 1. Feature Extraction
-        features = self.backbone(x) # Swin Tiny features: [B*T, H/32, W/32, 768]
-        features = features.permute(0, 3, 1, 2) # Convert to [B*T, 768, H/32, W/128] for Conv layers
+        features = self.backbone(x) # [B*T, 768, H/32, W/128]
 
         # 2. Projection & Upsampling
         features = self.conv_proj(features)

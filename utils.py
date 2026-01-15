@@ -91,18 +91,21 @@ def ctc_beam_search_decode(log_probs, idx2char, beam_width=10, use_format_filter
     topk_log_probs, topk_indices = log_probs.topk(topk_k, dim=2)
 
     for b in range(batch_size):
-        # beams: {prefix: (p_blank, p_nonblank)}
+        log_probs_b = log_probs[b]
+        if torch.isnan(log_probs_b).any():
+            log_probs_b = torch.nan_to_num(log_probs_b, nan=-10.0, posinf=0.0, neginf=-10.0)
+            
         beams = {(): (0.0, -float('inf'))} 
         
         for t in range(seq_len):
             new_beams = {}
-            step_topk_log_probs = topk_log_probs[b, t]
-            step_topk_indices = topk_indices[b, t]
+            step_log_probs = log_probs_b[t]
+            topk_log_probs_step, topk_indices_step = step_log_probs.topk(topk_k)
             
             for prefix, (p_b, p_nb) in beams.items():
                 for k in range(topk_k):
-                    char_idx = step_topk_indices[k].item()
-                    char_log_prob = step_topk_log_probs[k].item()
+                    char_idx = topk_indices_step[k].item()
+                    char_log_prob = topk_log_probs_step[k].item()
                     
                     if char_idx == 0: # Blank
                         curr_p_b, curr_p_nb = new_beams.get(prefix, (-float('inf'), -float('inf')))
