@@ -72,6 +72,8 @@ venv.bak/
 # Data
 data/
 val_tracks.json
+*.zip
+
 
 # Logs
 *.log
