@@ -1,8 +1,6 @@
 try:
-    from .fusion import AttentionFusion
-    from .crnn import MultiFrameCRNN
+    from .crnn import EndToEndLPR
 except ImportError:
-    from fusion import AttentionFusion
-    from crnn import MultiFrameCRNN
+    from crnn import EndToEndLPR
 
-__all__ = ['AttentionFusion', 'MultiFrameCRNN']
+__all__ = ['EndToEndLPR']

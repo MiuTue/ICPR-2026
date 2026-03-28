@@ -7,13 +7,13 @@ from tqdm import tqdm
 
 try:
     from .config import Config
-    from .dataset import AdvancedMultiFrameDataset
-    from .models import MultiFrameCRNN
+    from .dataset import EndToEndDataset
+    from .models.crnn import EndToEndLPR
     from .utils import seed_everything, decode_predictions
 except ImportError:
     from config import Config
-    from dataset import AdvancedMultiFrameDataset
-    from models import MultiFrameCRNN
+    from dataset import EndToEndDataset
+    from models.crnn import EndToEndLPR
     from utils import seed_everything, decode_predictions
 
 def test_pipeline():
@@ -23,7 +23,9 @@ def test_pipeline():
     print("="*60)
 
     # Load Dataset
-    test_ds = AdvancedMultiFrameDataset(Config.DATA_ROOT, mode='test')
+    test_path = "data/test" if os.path.exists("data/test") else Config.DATA_ROOT
+    print(f"📂 Evaluating on: {test_path}")
+    test_ds = EndToEndDataset(test_path, mode='test')
     
     if len(test_ds) == 0:
         print("❌ Test loader không có dữ liệu!")
@@ -33,37 +35,49 @@ def test_pipeline():
         test_ds, 
         batch_size=Config.BATCH_SIZE, 
         shuffle=False,
-        collate_fn=AdvancedMultiFrameDataset.collate_fn, 
+        collate_fn=EndToEndDataset.collate_fn, 
         num_workers=Config.NUM_WORKERS, 
         pin_memory=True
     )
 
     # Initialize Model
-    model = MultiFrameCRNN(num_classes=Config.NUM_CLASSES).to(Config.DEVICE)
+    model = EndToEndLPR(num_classes=Config.NUM_CLASSES).to(Config.DEVICE)
     
+    # Check for best_model.pth or use initial weights (for testing script logic)
     if os.path.exists("best_model.pth"):
-        # Load best model
         print(f"📂 Loading weights from 'best_model.pth'...")
-        model.load_state_dict(torch.load("best_model.pth", weights_only=True, map_location=Config.DEVICE))
-        model.eval()
+        model.load_state_dict(torch.load("best_model.pth", map_location=Config.DEVICE, weights_only=True))
+    else:
+        print("⚠️ CẢNH BÁO: Không tìm thấy best_model.pth! Đang dùng trọng số ngẫu nhiên.")
+    
+    model.eval()
 
-        test_correct = 0
-        test_total = 0
-        test_char_correct = 0
-        test_char_total = 0
+    test_correct = 0
+    test_total = 0
+    test_char_correct = 0
+    test_char_total = 0
 
-        results = []  # Lưu kết quả để phân tích
+    results = [] 
+    all_predictions = []
 
-        with torch.no_grad():
-            for images, targets, target_lengths, labels_text in tqdm(test_loader, desc="Testing"):
-                images = images.to(Config.DEVICE)
-                preds = model(images)
-                decoded = decode_predictions(torch.argmax(preds, dim=2), Config.IDX2CHAR)
+    with torch.no_grad():
+        for lr_images, hr_images, targets, target_lengths, labels_text, track_ids in tqdm(test_loader, desc="Testing"):
+            lr_images = lr_images.to(Config.DEVICE)
+            sr_imgs, preds = model(lr_images)
+            decoded = decode_predictions(torch.argmax(preds, dim=2), Config.IDX2CHAR)
 
-                for i in range(len(labels_text)):
-                    gt = labels_text[i]
-                    pred = decoded[i]
+            for i in range(len(labels_text)):
+                gt = labels_text[i]
+                pred = decoded[i]
+                tid = track_ids[i]
 
+                all_predictions.append({
+                    'track_id': tid,
+                    'prediction': pred,
+                    'ground_truth': gt if gt else "N/A"
+                })
+
+                if gt:
                     # Exact match accuracy
                     if pred == gt:
                         test_correct += 1
@@ -77,9 +91,15 @@ def test_pipeline():
 
                     # Lưu một số kết quả sai để debug
                     if pred != gt and len(results) < 20:
-                        results.append({'gt': gt, 'pred': pred})
+                        results.append({'track_id': tid, 'gt': gt, 'pred': pred})
 
-        test_acc = (test_correct / test_total) * 100 if test_total > 0 else 0
+    # Save all predictions
+    with open('predictions.json', 'w') as f:
+        json.dump(all_predictions, f, indent=2)
+    print(f"\n💾 All predictions saved to 'predictions.json'")
+
+    if test_total > 0:
+        test_acc = (test_correct / test_total) * 100
         char_acc = (test_char_correct / test_char_total) * 100 if test_char_total > 0 else 0
 
         print(f"\n📊 TEST RESULTS:")
@@ -89,22 +109,22 @@ def test_pipeline():
         if results:
             print(f"\n🔍 Sample Errors (first 10):")
             for i, r in enumerate(results[:10]):
-                print(f"   {i+1}. GT: '{r['gt']}' | Pred: '{r['pred']}'")
+                print(f"   {i+1}. [{r['track_id']}] GT: '{r['gt']}' | Pred: '{r['pred']}'")
 
         # Lưu kết quả vào file
         test_results = {
             'test_accuracy': test_acc,
             'char_accuracy': char_acc,
-            'total_samples': test_total,
+            'total_samples_with_gt': test_total,
             'correct_samples': test_correct,
             'sample_errors': results
         }
         with open('test_results.json', 'w') as f:
             json.dump(test_results, f, indent=2)
-        print(f"\n💾 Results saved to 'test_results.json'")
-
+        print(f"💾 Metrics saved to 'test_results.json'")
     else:
-        print("❌ Không tìm thấy best_model.pth!")
+        print("\nℹ️ Không có nhãn Ground Truth để tính toán độ chính xác.")
+        print(f"ℹ️ Đã hoàn thành inference cho {len(all_predictions)} mẫu.")
 
 if __name__ == "__main__":
     test_pipeline()

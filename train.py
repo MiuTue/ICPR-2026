@@ -1,10 +1,8 @@
 """
-Training script for Multi-Frame CRNN License Plate Recognition.
+Training script for End-to-End SR + CRNN License Plate Recognition.
 
 Usage:
     python train.py
-
-The data directory should be configured in config.py (DATA_ROOT).
 """
 
 import os
@@ -15,16 +13,15 @@ from torch.utils.data import DataLoader
 from torch.amp import autocast, GradScaler
 from tqdm import tqdm
 
-# Support both running as module and direct script execution
 try:
     from .config import Config
-    from .dataset import AdvancedMultiFrameDataset
-    from .models import MultiFrameCRNN
+    from .dataset import EndToEndDataset
+    from .models.crnn import EndToEndLPR
     from .utils import seed_everything, decode_predictions
 except ImportError:
     from config import Config
-    from dataset import AdvancedMultiFrameDataset
-    from models import MultiFrameCRNN
+    from dataset import EndToEndDataset
+    from models.crnn import EndToEndLPR
     from utils import seed_everything, decode_predictions
 
 
@@ -33,14 +30,13 @@ def train_pipeline():
     seed_everything(Config.SEED)
     print(f"🚀 TRAINING START | Device: {Config.DEVICE}")
     
-    # Check data directory
     if not os.path.exists(Config.DATA_ROOT):
         print(f"❌ LỖI: Sai đường dẫn DATA_ROOT: {Config.DATA_ROOT}")
         return
 
     # Create datasets
-    train_ds = AdvancedMultiFrameDataset(Config.DATA_ROOT, mode='train', split_ratio=0.8)
-    val_ds = AdvancedMultiFrameDataset(Config.DATA_ROOT, mode='val', split_ratio=0.8)
+    train_ds = EndToEndDataset(Config.DATA_ROOT, mode='train', split_ratio=0.8)
+    val_ds = EndToEndDataset(Config.DATA_ROOT, mode='val', split_ratio=0.8)
     
     if len(train_ds) == 0: 
         print("❌ Dataset Train rỗng!")
@@ -51,7 +47,7 @@ def train_pipeline():
         train_ds, 
         batch_size=Config.BATCH_SIZE, 
         shuffle=True, 
-        collate_fn=AdvancedMultiFrameDataset.collate_fn, 
+        collate_fn=EndToEndDataset.collate_fn, 
         num_workers=Config.NUM_WORKERS, 
         pin_memory=True
     )
@@ -61,7 +57,7 @@ def train_pipeline():
             val_ds, 
             batch_size=Config.BATCH_SIZE, 
             shuffle=False, 
-            collate_fn=AdvancedMultiFrameDataset.collate_fn, 
+            collate_fn=EndToEndDataset.collate_fn, 
             num_workers=Config.NUM_WORKERS, 
             pin_memory=True
         )
@@ -70,8 +66,11 @@ def train_pipeline():
         val_loader = None
 
     # Initialize model, loss, optimizer
-    model = MultiFrameCRNN(num_classes=Config.NUM_CLASSES).to(Config.DEVICE)
-    criterion = nn.CTCLoss(blank=0, zero_infinity=True)
+    model = EndToEndLPR(num_classes=Config.NUM_CLASSES).to(Config.DEVICE)
+    
+    criterion_ctc = nn.CTCLoss(blank=0, zero_infinity=True)
+    criterion_sr = nn.MSELoss()
+    
     optimizer = optim.AdamW(model.parameters(), lr=Config.LEARNING_RATE, weight_decay=1e-4)
     scheduler = optim.lr_scheduler.OneCycleLR(
         optimizer,
@@ -86,40 +85,55 @@ def train_pipeline():
     scaler = GradScaler()
 
     best_acc = 0.0
+    lambda_sr = 1.0  # Weight for SR loss
     
     # Training loop
     for epoch in range(Config.EPOCHS):
         model.train()
         epoch_loss = 0
+        epoch_loss_ctc = 0
+        epoch_loss_sr = 0
         
         pbar = tqdm(train_loader, desc=f"Ep {epoch+1}/{Config.EPOCHS}")
-        for images, targets, target_lengths, _ in pbar:
-            images = images.to(Config.DEVICE)
+        for lr_images, hr_images, targets, target_lengths, _ in pbar:
+            lr_images = lr_images.to(Config.DEVICE)
+            hr_images = hr_images.to(Config.DEVICE)
             targets = targets.to(Config.DEVICE)
             
             optimizer.zero_grad(set_to_none=True)
             
             with autocast('cuda'):
-                preds = model(images)
+                sr_imgs, preds = model(lr_images)
                 preds_permuted = preds.permute(1, 0, 2)
                 input_lengths = torch.full(
-                    size=(images.size(0),), 
+                    size=(lr_images.size(0),), 
                     fill_value=preds.size(1), 
                     dtype=torch.long
                 )
-                loss = criterion(preds_permuted, targets, input_lengths, target_lengths)
+                
+                loss_ctc = criterion_ctc(preds_permuted, targets, input_lengths, target_lengths)
+                loss_sr = criterion_sr(sr_imgs, hr_images)
+                
+                loss = loss_ctc + lambda_sr * loss_sr
 
             scaler_scale_before = scaler.get_scale()
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
             
-            # Only step scheduler if optimizer actually stepped
             if scaler.get_scale() >= scaler_scale_before:
                 scheduler.step()
             
             epoch_loss += loss.item()
-            pbar.set_postfix({'loss': loss.item(), 'lr': scheduler.get_last_lr()[0]})
+            epoch_loss_ctc += loss_ctc.item()
+            epoch_loss_sr += loss_sr.item()
+            
+            pbar.set_postfix({
+                'loss': f"{loss.item():.3f}", 
+                'ctc': f"{loss_ctc.item():.3f}", 
+                'sr': f"{loss_sr.item():.3f}", 
+                'lr': f"{scheduler.get_last_lr()[0]:.1e}"
+            })
             
         avg_train_loss = epoch_loss / len(train_loader)
 
@@ -134,17 +148,22 @@ def train_pipeline():
             total_samples = 0
             
             with torch.no_grad():
-                for images, targets, target_lengths, labels_text in val_loader:
-                    images = images.to(Config.DEVICE)
+                for lr_images, hr_images, targets, target_lengths, labels_text in val_loader:
+                    lr_images = lr_images.to(Config.DEVICE)
+                    hr_images = hr_images.to(Config.DEVICE)
                     targets = targets.to(Config.DEVICE)
-                    preds = model(images)
                     
-                    loss = criterion(
+                    sr_imgs, preds = model(lr_images)
+                    
+                    loss_ctc = criterion_ctc(
                         preds.permute(1, 0, 2), 
                         targets, 
-                        torch.full((images.size(0),), preds.size(1), dtype=torch.long), 
+                        torch.full((lr_images.size(0),), preds.size(1), dtype=torch.long), 
                         target_lengths
                     )
+                    loss_sr = criterion_sr(sr_imgs, hr_images)
+                    loss = loss_ctc + lambda_sr * loss_sr
+                    
                     val_loss += loss.item()
                     
                     decoded = decode_predictions(torch.argmax(preds, dim=2), Config.IDX2CHAR)
@@ -156,7 +175,7 @@ def train_pipeline():
             avg_val_loss = val_loss / len(val_loader)
             val_acc = (total_correct / total_samples) * 100 if total_samples > 0 else 0
         
-        print(f"Result: Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f} | Val Acc: {val_acc:.2f}%")
+        print(f"Result: Train Loss: {avg_train_loss:.4f} (CTC: {epoch_loss_ctc/len(train_loader):.3f}, SR: {epoch_loss_sr/len(train_loader):.3f}) | Val Loss: {avg_val_loss:.4f} | Val Acc: {val_acc:.2f}%")
         
         # Save best model
         if val_acc > best_acc:

@@ -7,10 +7,10 @@ except ImportError:
     from config import Config
 
 
-def get_train_transforms():
+def get_train_transforms(height=Config.IMG_HEIGHT, width=Config.IMG_WIDTH):
     """Get training data augmentation transforms."""
     return A.Compose([
-        A.Resize(height=Config.IMG_HEIGHT, width=Config.IMG_WIDTH),
+        A.Resize(height=height, width=width),
         A.OneOf([
             A.Affine(scale=(0.8, 1.2), translate_percent=(0.1, 0.1), rotate=(-15, 15), shear=(-10, 10), p=1.0, fill=128),
             A.ElasticTransform(alpha=1, sigma=50, p=1.0),
@@ -59,10 +59,10 @@ def get_degradation_transforms():
     ])
 
 
-def get_val_transforms():
+def get_val_transforms(height=Config.IMG_HEIGHT, width=Config.IMG_WIDTH):
     """Get validation/inference transforms (no augmentation)."""
     return A.Compose([
-        A.Resize(height=Config.IMG_HEIGHT, width=Config.IMG_WIDTH),
+        A.Resize(height=height, width=width),
         A.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
         ToTensorV2()
     ])

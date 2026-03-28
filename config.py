@@ -12,6 +12,8 @@ class Config:
     # Image settings
     IMG_HEIGHT = 32
     IMG_WIDTH = 128
+    HR_IMG_HEIGHT = 64
+    HR_IMG_WIDTH = 256
     
     # Character set
     CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-"
