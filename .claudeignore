@@ -1,0 +1,37 @@
+# Git-ignored artifacts
+val_tracks.json
+best_model.pth
+best_model_edsr.pth
+best_model_realesrgan.pth
+predictions.json
+test_results.json
+train_results.json
+
+# Virtual environment
+.venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Jupyter notebook checkpoints
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Dataset images
+data/
+datasets/
+images/
+*.jpg
+*.jpeg
+*.bmp
+
+# Model weights
+*.pth
+*.onnx
+*.weights
