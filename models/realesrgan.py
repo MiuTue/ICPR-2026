@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 
 
 class DenseLayer(nn.Module):
@@ -105,8 +106,8 @@ class RealESRGANUpsampler(nn.Module):
         # Shallow features
         feat = self.conv_first(x)                        # [B*T, 64, H, W]
 
-        # RRDB body
-        body_feat = self.rrdb_body(feat)                  # [B*T, 64, H, W]
+        # RRDB body — checkpoint to save activation memory during forward
+        body_feat = checkpoint(self.rrdb_body, feat)     # [B*T, 64, H, W]
         body_feat = self.conv_body(body_feat)            # [B*T, 64, H, W]
 
         # Fusion: residual from initial features
