@@ -334,7 +334,7 @@ def train_pipeline():
                 if LOG_IMAGES_EVERY > 0 and epoch_steps % LOG_IMAGES_EVERY == 0:
                     model.eval()
                     with torch.no_grad():
-                        preds_raw = model(images[:8])
+                        preds_raw = model(images[:8], use_sr=True, use_stn=False)
                         decoded = decode_predictions(
                             preds_raw, Config.IDX2CHAR, beam_width=1
                         )
@@ -363,6 +363,11 @@ def train_pipeline():
 
         avg_train_loss = epoch_loss / max(epoch_steps // max(Config.GRAD_ACCUM, 1), 1)
 
+        # Free training activations before validation
+        if device.type == 'cuda':
+            torch.cuda.empty_cache()
+            gc.collect()
+
         # ── Validation ────────────────────────────────────────────────────────
         val_acc           = 0.0
         avg_val_loss      = 0.0
@@ -372,6 +377,10 @@ def train_pipeline():
         val_sample_errors = []
 
         if val_loader is not None:
+            val_loss = 0.0
+            val_steps = 0
+            total_correct = 0
+            total_samples = 0
             model.eval()
 
             with torch.no_grad():
@@ -381,7 +390,7 @@ def train_pipeline():
                     targets = targets.to(device)
                     target_lengths = target_lengths.to(device)
 
-                    preds = model(images)
+                    preds = model(images, use_sr=True, use_stn=False)
                     input_lens = torch.full(
                         (images.size(0),), preds.size(1), dtype=torch.long, device=device
                     )
