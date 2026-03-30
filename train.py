@@ -362,14 +362,65 @@ def train_pipeline():
         avg_train_loss = epoch_loss / max(epoch_steps // max(Config.GRAD_ACCUM, 1), 1)
 
         # ── Validation ────────────────────────────────────────────────────────
-        val_acc      = 0.0
-        avg_val_loss  = 0.0
-        val_char_correct = 0
-        val_char_total   = 0
+        val_acc           = 0.0
+        avg_val_loss      = 0.0
+        val_char_correct  = 0
+        val_char_total    = 0
+        val_char_acc      = 0.0
         val_sample_errors = []
 
         if val_loader is not None:
-            model.eval()
+            if device.type == 'cuda':
+                model.eval()
+                model_cpu = model.cpu()     # model to CPU
+                val_device = torch.device('cpu')
+                torch.cuda.empty_cache()
+            else:
+                model_cpu = model
+                model_cpu.eval()
+                val_device = device
+
+            val_loss = 0.0
+            val_steps = 0
+            total_correct = 0
+            total_samples = 0
+
+            with torch.no_grad():
+                for images, targets, target_lengths, labels_text in val_loader:
+                    images = images.to(val_device)
+                    targets = targets.to(val_device)
+                    target_lengths = target_lengths.to(val_device)
+
+                    preds = model_cpu(images)
+                    input_lens = torch.full(
+                        (images.size(0),), preds.size(1), dtype=torch.long, device=val_device
+                    )
+                    loss = criterion(preds.permute(1, 0, 2), targets, input_lens, target_lengths)
+                    val_loss += loss.item()
+                    val_steps += 1
+
+                    decoded = decode_predictions(preds, Config.IDX2CHAR, beam_width=1)
+                    for gt, pred_text in zip(labels_text, decoded):
+                        if pred_text == gt:
+                            total_correct += 1
+                        else:
+                            if len(val_sample_errors) < 5:
+                                val_sample_errors.append({"gt": gt, "pred": pred_text})
+                        total_samples += 1
+
+                        for j in range(max(len(gt), len(pred_text))):
+                            val_char_total += 1
+                            if j < len(gt) and j < len(pred_text) and gt[j] == pred_text[j]:
+                                val_char_correct += 1
+
+            # Move model back to GPU
+            if device.type == 'cuda':
+                model = model.to(device)
+                model.train()
+
+            avg_val_loss = val_loss / max(val_steps, 1)
+            val_acc = (total_correct / total_samples) * 100 if total_samples > 0 else 0.0
+            val_char_acc = (val_char_correct / val_char_total) * 100 if val_char_total > 0 else 0.0
             val_loss = 0.0
             val_steps = 0
             total_correct = 0
@@ -403,13 +454,13 @@ def train_pipeline():
                             if j < len(gt) and j < len(pred_text) and gt[j] == pred_text[j]:
                                 val_char_correct += 1
 
+                    # Free VRAM after each val batch
+                    if device.type == 'cuda':
+                        torch.cuda.empty_cache()
+
             avg_val_loss = val_loss / max(val_steps, 1)
             val_acc = (total_correct / total_samples) * 100 if total_samples > 0 else 0.0
             val_char_acc = (val_char_correct / val_char_total) * 100 if val_char_total > 0 else 0.0
-
-            # Free VRAM after validation
-            if device.type == 'cuda':
-                torch.cuda.empty_cache()
 
         epoch_duration = time.time() - epoch_start_time
 
