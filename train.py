@@ -8,6 +8,7 @@ The data directory and model options are configured in config.py.
 Weights & Biases is used for experiment tracking and metric logging.
 """
 
+import gc
 import os
 import time
 import datetime
@@ -19,6 +20,7 @@ import wandb
 from torch.utils.data import DataLoader
 from torch.amp import autocast, GradScaler
 from tqdm import tqdm
+import gc
 
 # Support both running as module and direct script execution
 try:
@@ -373,7 +375,8 @@ def train_pipeline():
             model.eval()
 
             with torch.no_grad():
-                for images, targets, target_lengths, labels_text in val_loader:
+                pbar_val = tqdm(val_loader, desc=f"Ep {epoch+1} [val]")
+                for images, targets, target_lengths, labels_text in pbar_val:
                     images = images.to(device)
                     targets = targets.to(device)
                     target_lengths = target_lengths.to(device)
@@ -400,8 +403,10 @@ def train_pipeline():
                             if j < len(gt) and j < len(pred_text) and gt[j] == pred_text[j]:
                                 val_char_correct += 1
 
+                    del preds, input_lens, loss, decoded
                     if device.type == 'cuda':
                         torch.cuda.empty_cache()
+                        gc.collect()
 
             avg_val_loss = val_loss / max(val_steps, 1)
             val_acc = (total_correct / total_samples) * 100 if total_samples > 0 else 0.0
