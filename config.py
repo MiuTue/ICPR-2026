@@ -32,7 +32,8 @@ class Config:
     CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-"
 
     # ── Training hyperparameters ─────────────────────────────────────────────
-    BATCH_SIZE    = int(os.getenv("BATCH_SIZE",    "64"))
+    BATCH_SIZE    = int(os.getenv("BATCH_SIZE",    "4"))    # micro-batch; use GRAD_ACCUM for effective BS
+    GRAD_ACCUM   = int(os.getenv("GRAD_ACCUM",     "4"))   # steps before optimizer.step() → effective BS = BATCH_SIZE × GRAD_ACCUM
     LEARNING_RATE = float(os.getenv("LR",          "0.0003"))
     EPOCHS        = int(os.getenv("EPOCHS",         "80"))
     SEED          = int(os.getenv("SEED",           "42"))

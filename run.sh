@@ -38,7 +38,7 @@ fi
 
 # Default values
 export BATCH_SIZE="${BATCH_SIZE:-16}"     # 16 for single GPU, increase for multi-GPU
-export NUM_WORKERS="${NUM_WORKERS:-4}"    # 4 on Linux
+export NUM_WORKERS="${NUM_WORKERS:-8}"    # 8 on Linux
 export EPOCHS="${EPOCHS:-80}"
 export LR="${LR:-0.0003}"
 export USE_STN="${USE_STN:-1}"

@@ -103,7 +103,7 @@ def train_pipeline():
     run_name = (
         f"lpr-{datetime.datetime.now().strftime('%m%d-%H%M')}"
         f"-stn{int(Config.USE_STN)}-sr{int(Config.USE_SR)}"
-        f"-bs{Config.BATCH_SIZE}"
+        f"-bs{Config.BATCH_SIZE}x{Config.GRAD_ACCUM}"
     )
     wandb.init(
         project=Config.WANDB_PROJECT,
@@ -124,6 +124,8 @@ def train_pipeline():
             "test_samples": None,
             # Training
             "batch_size": Config.BATCH_SIZE,
+            "grad_accum": Config.GRAD_ACCUM,
+            "effective_batch_size": Config.BATCH_SIZE * Config.GRAD_ACCUM,
             "learning_rate": Config.LEARNING_RATE,
             "epochs": Config.EPOCHS,
             "seed": Config.SEED,
@@ -210,8 +212,9 @@ def train_pipeline():
     )
     scaler = GradScaler() if device.type == 'cuda' else None
 
-    best_acc  = 0.0
-    global_step = 0
+    best_acc     = 0.0
+    global_step  = 0
+    accum_step   = 0    # counts within epoch for gradient accumulation
     epoch_start_time = time.time()
 
     # ── Training loop ─────────────────────────────────────────────────────────
@@ -222,12 +225,10 @@ def train_pipeline():
         trainable_p, _ = _count_trainable(model)
 
         model.train()
-        epoch_loss = 0.0
+        epoch_loss  = 0.0
         epoch_steps = 0
+        accum_step  = 0
         mixup_count = 0
-
-        # Per-epoch step-level metrics (aggregated)
-        step_losses = []
 
         pbar = tqdm(train_loader, desc=f"Ep {epoch+1}/{Config.EPOCHS} [{phase_names[phase]}]")
         for batch_idx, (images, targets, target_lengths, _) in enumerate(pbar):
@@ -235,7 +236,9 @@ def train_pipeline():
             targets = targets.to(device)
             target_lengths = target_lengths.to(device)
 
-            optimizer.zero_grad(set_to_none=True)
+            # Zero gradient ONLY when starting a new accumulation cycle
+            if accum_step == 0:
+                optimizer.zero_grad(set_to_none=True)
 
             # Mixup
             use_mixup = np.random.random() < 0.15
@@ -251,13 +254,14 @@ def train_pipeline():
                 mixed = images
                 lam = 1.0
 
-            # Forward + backward
+            # ── Forward ──────────────────────────────────────────────────────
             if device.type == 'cuda' and scaler is not None:
                 with autocast('cuda'):
                     preds = model(mixed)
                     preds_permuted = preds.permute(1, 0, 2)
                     input_lens = torch.full(
-                        (images.size(0),), preds.size(1), dtype=torch.long, device=device
+                        (images.size(0),), preds.size(1),
+                        dtype=torch.long, device=device
                     )
                     if use_mixup:
                         loss1 = criterion(preds_permuted, targets,  input_lens, target_lengths)
@@ -266,20 +270,16 @@ def train_pipeline():
                     else:
                         loss = criterion(preds_permuted, targets, input_lens, target_lengths)
 
-                scaler_scale_before = scaler.get_scale()
-                scaler.scale(loss).backward()
-                scaler.unscale_(optimizer)
-                g_norm = _grad_norm(model)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                scaler.step(optimizer)
-                scaler.update()
-                if scaler.get_scale() >= scaler_scale_before:
-                    scheduler.step()
+                    # Scale by 1/accum so the accumulated gradient is correct
+                    loss_scaled = loss / Config.GRAD_ACCUM
+                    scaler.scale(loss_scaled).backward()
+
             else:
                 preds = model(mixed)
                 preds_permuted = preds.permute(1, 0, 2)
                 input_lens = torch.full(
-                    (images.size(0),), preds.size(1), dtype=torch.long, device=device
+                    (images.size(0),), preds.size(1),
+                    dtype=torch.long, device=device
                 )
                 if use_mixup:
                     loss1 = criterion(preds_permuted, targets,  input_lens, target_lengths)
@@ -288,39 +288,58 @@ def train_pipeline():
                 else:
                     loss = criterion(preds_permuted, targets, input_lens, target_lengths)
 
-                loss.backward()
-                g_norm = _grad_norm(model)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                optimizer.step()
-                scheduler.step()
+                (loss / Config.GRAD_ACCUM).backward()
 
-            epoch_loss += loss.item()
-            step_losses.append(loss.item())
+            accum_step  += 1
             epoch_steps += 1
             global_step += 1
 
-            # ── Per-step W&B logging (every N steps) ─────────────────────────
-            if LOG_STEP_EVERY > 0 and epoch_steps % LOG_STEP_EVERY == 0:
-                wandb.log({
-                    "step/loss":          loss.item(),
-                    "step/lr":            scheduler.get_last_lr()[0],
-                    "step/grad_norm":     g_norm,
-                    "step/phase":         phase,
-                    "step/trainable_p":   trainable_p,
-                    "step/epoch":         epoch + 1,
-                    "step/global_step":   global_step,
-                }, step=global_step)
+            # ── Optimizer step: only after GRAD_ACCUM micro-batches ───────────
+            is_last_accum = (accum_step % Config.GRAD_ACCUM == 0)
 
-            # ── Per-step prediction table (every N steps) ───────────────────
-            if LOG_IMAGES_EVERY > 0 and epoch_steps % LOG_IMAGES_EVERY == 0:
-                model.eval()
-                with torch.no_grad():
-                    preds_raw = model(images[:8])
-                    decoded = decode_predictions(
-                        preds_raw, Config.IDX2CHAR, beam_width=1
-                    )
-                model.train()
-                _log_predictions_table(images, list(_)[:8], decoded, global_step)
+            if is_last_accum:
+                if device.type == 'cuda' and scaler is not None:
+                    scaler.unscale_(optimizer)
+                    g_norm = _grad_norm(model)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                    scaler.step(optimizer)
+                    scaler.update()
+                    if scaler.get_scale() >= 1.0:
+                        scheduler.step()
+                    # Clear VRAM after optimizer step
+                    torch.cuda.empty_cache()
+                else:
+                    g_norm = _grad_norm(model)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                    optimizer.step()
+                    scheduler.step()
+
+                accum_step = 0   # reset for next cycle
+
+                # ── Per-step W&B logging ─────────────────────────────────────
+                if LOG_STEP_EVERY > 0:
+                    wandb.log({
+                        "step/loss":        loss.item(),
+                        "step/lr":          scheduler.get_last_lr()[0],
+                        "step/grad_norm":   g_norm if is_last_accum else 0,
+                        "step/phase":        phase,
+                        "step/trainable_p":  trainable_p,
+                        "step/epoch":        epoch + 1,
+                        "step/global_step":  global_step,
+                    }, step=global_step)
+
+                # ── Per-step prediction table ─────────────────────────────────
+                if LOG_IMAGES_EVERY > 0 and epoch_steps % LOG_IMAGES_EVERY == 0:
+                    model.eval()
+                    with torch.no_grad():
+                        preds_raw = model(images[:8])
+                        decoded = decode_predictions(
+                            preds_raw, Config.IDX2CHAR, beam_width=1
+                        )
+                    model.train()
+                    _log_predictions_table(images, list(_)[:8], decoded, global_step)
+
+                epoch_loss += loss.item()
 
             # Progress bar
             pbar.set_postfix({
@@ -328,7 +347,19 @@ def train_pipeline():
                 'lr':   f'{scheduler.get_last_lr()[0]:.2e}',
             })
 
-        avg_train_loss = epoch_loss / max(epoch_steps, 1)
+        # Drain any remaining accumulated gradient (partial cycle at end of epoch)
+        if accum_step > 0:
+            if device.type == 'cuda' and scaler is not None:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                scaler.step(optimizer)
+                scaler.update()
+                torch.cuda.empty_cache()
+            else:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                optimizer.step()
+
+        avg_train_loss = epoch_loss / max(epoch_steps // max(Config.GRAD_ACCUM, 1), 1)
 
         # ── Validation ────────────────────────────────────────────────────────
         val_acc      = 0.0
@@ -375,6 +406,10 @@ def train_pipeline():
             avg_val_loss = val_loss / max(val_steps, 1)
             val_acc = (total_correct / total_samples) * 100 if total_samples > 0 else 0.0
             val_char_acc = (val_char_correct / val_char_total) * 100 if val_char_total > 0 else 0.0
+
+            # Free VRAM after validation
+            if device.type == 'cuda':
+                torch.cuda.empty_cache()
 
         epoch_duration = time.time() - epoch_start_time
 
