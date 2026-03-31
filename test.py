@@ -1,7 +1,16 @@
+"""
+Test script for Multi-Frame LPR.
+Evaluates on held-out test set (5 LR frames/track → SR → recognition).
+
+Usage:
+    python test.py
+
+The model (best_model2.pth) is loaded with strict=False loading.
+"""
+
 import os
 import json
 import torch
-import torch.nn as nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -19,16 +28,15 @@ except ImportError:
 
 def test_pipeline():
     seed_everything(Config.SEED)
-    print("\n" + "="*60)
-    print("🧪 EVALUATING ON HELD-OUT TEST SET")
-    print("="*60)
-    print(f"   Test data : {Config.DATA_TEST}")
+    print("\n" + "=" * 60)
+    print("TEST: 5 LR frames/track → SR → Recognition")
+    print("=" * 60)
 
-    # Test tracks (from TEST_TRACKS_FILE) live inside DATA_ROOT
+    # ── Test Dataset: chỉ chứa LR frames ──────────────────────────────────
     test_ds = TestDataset(root_dir=Config.DATA_ROOT)
 
     if len(test_ds) == 0:
-        print("❌ Test loader rỗng!")
+        print("Test dataset empty!")
         return
 
     test_loader = DataLoader(
@@ -39,80 +47,91 @@ def test_pipeline():
         num_workers=Config.NUM_WORKERS,
         pin_memory=Config.DEVICE.type == 'cuda'
     )
+    print(f"   Test samples: {len(test_ds)}")
 
-    # Model
-    model = MultiFrameCRNN(num_classes=Config.NUM_CLASSES).to(Config.DEVICE)
+    # ── Model: Module 1 (SR) + Module 2 (Recognition) ─────────────────────
+    model = MultiFrameCRNN(
+        num_classes=Config.NUM_CLASSES,
+        use_sr=Config.USE_SR,
+    ).to(Config.DEVICE)
 
     if os.path.exists("best_model2.pth"):
-        print(f"📂 Loading weights from 'best_model2.pth'...")
-        checkpoint = torch.load("best_model2.pth", weights_only=True, map_location=Config.DEVICE)
-        missing_keys, unexpected_keys = model.load_state_dict(checkpoint, strict=False)
-        if missing_keys:
-            print(f"   ⚠️ Missing keys : {missing_keys[:3]}")
-        if unexpected_keys:
-            print(f"   ⚠️ Unexpected keys: {unexpected_keys[:3]}")
+        print(f"Loading weights from 'best_model2.pth'...")
+        checkpoint = torch.load(
+            "best_model2.pth",
+            weights_only=True,
+            map_location=Config.DEVICE
+        )
+        missing, unexpected = model.load_state_dict(checkpoint, strict=False)
+        if missing:
+            print(f"   Missing keys: {missing[:3]}")
+        if unexpected:
+            print(f"   Unexpected keys: {unexpected[:3]}")
         model.eval()
     else:
-        print("❌ Không tìm thấy best_model2.pth — skipping inference.")
+        print("best_model2.pth not found — skipping inference.")
         return
 
-    test_correct = 0
-    test_total = 0
-    test_char_correct = 0
-    test_char_total = 0
+    # ── Inference ─────────────────────────────────────────────────────────
+    total_correct = 0
+    total_samples = 0
+    char_correct = 0
+    char_total = 0
     errors = []
 
     with torch.no_grad():
-        for images, targets, target_lengths, labels_text in tqdm(test_loader, desc="Testing"):
+        for images, _, _, labels_text in tqdm(test_loader, desc="Testing"):
             images = images.to(Config.DEVICE)
-            preds = model(images)
 
-            # Beam search + format filter for final evaluation
+            # Module 1 (SR): LR → HR
+            # Module 2: Recognition on SR frames
+            preds = model(images, use_sr=True)  # Luôn dùng SR ✓
+
+            # CTC Beam Search decode
             decoded = decode_predictions(
-                preds.log_softmax(2), Config.IDX2CHAR,
-                beam_width=5, use_format_filter=True
+                preds, Config.IDX2CHAR,
+                beam_width=5,
+                use_format_filter=True,  # Brazilian plate filter
             )
 
-            for i in range(len(labels_text)):
-                gt = labels_text[i]
-                pred = decoded[i]
-
-                if pred == gt:
-                    test_correct += 1
+            for gt, pred_text in zip(labels_text, decoded):
+                if pred_text == gt:
+                    total_correct += 1
                 else:
                     if len(errors) < 20:
-                        errors.append({'gt': gt, 'pred': pred})
-                test_total += 1
+                        errors.append({'gt': gt, 'pred': pred_text})
+                total_samples += 1
 
                 # Character-level accuracy
-                for j in range(max(len(gt), len(pred))):
-                    test_char_total += 1
-                    if j < len(gt) and j < len(pred) and gt[j] == pred[j]:
-                        test_char_correct += 1
+                for j in range(max(len(gt), len(pred_text))):
+                    char_total += 1
+                    if j < len(gt) and j < len(pred_text) and gt[j] == pred_text[j]:
+                        char_correct += 1
 
-    test_acc = (test_correct / test_total) * 100 if test_total > 0 else 0
-    char_acc = (test_char_correct / test_char_total) * 100 if test_char_total > 0 else 0
+    # ── Results ───────────────────────────────────────────────────────────
+    test_acc = (total_correct / total_samples * 100) if total_samples > 0 else 0
+    char_acc = (char_correct / char_total * 100) if char_total > 0 else 0
 
-    print(f"\n📊 TEST RESULTS:")
-    print(f"   • Exact Match Accuracy : {test_acc:.2f}%  ({test_correct}/{test_total})")
-    print(f"   • Character Accuracy   : {char_acc:.2f}%")
+    print(f"\n--- RESULTS ---")
+    print(f"   Exact Match Accuracy : {test_acc:.2f}%  ({total_correct}/{total_samples})")
+    print(f"   Character Accuracy   : {char_acc:.2f}%")
 
     if errors:
-        print(f"\n🔍 Sample Errors (first 10):")
+        print(f"\nSample Errors:")
         for i, r in enumerate(errors[:10]):
             print(f"   {i+1}. GT: '{r['gt']}' | Pred: '{r['pred']}'")
 
-    # Save results
-    test_results = {
+    # ── Save results ───────────────────────────────────────────────────────
+    results = {
         'test_accuracy': test_acc,
         'char_accuracy': char_acc,
-        'total_samples': test_total,
-        'correct_samples': test_correct,
-        'sample_errors': errors
+        'total_samples': total_samples,
+        'correct_samples': total_correct,
+        'sample_errors': errors,
     }
     with open('test_results.json', 'w') as f:
-        json.dump(test_results, f, indent=2)
-    print(f"\n💾 Results saved to 'test_results.json'")
+        json.dump(results, f, indent=2)
+    print(f"\nSaved to 'test_results.json'")
 
 
 if __name__ == "__main__":

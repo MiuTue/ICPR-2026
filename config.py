@@ -26,28 +26,25 @@ class Config:
     # ── Image settings ──────────────────────────────────────────────────────
     IMG_HEIGHT = 64
     IMG_WIDTH  = 256
-    NUM_FRAMES = 8   # Intent: capped at 5 in dataset._load_frames
 
-    # ── Character set ───────────────────────────────────────────────────────
-    CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-"
+    # ── Character set (Brazilian/Mercosur plates: 3 letters + 4 digits) ─────
+    CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
     # ── Training hyperparameters ─────────────────────────────────────────────
-    BATCH_SIZE    = int(os.getenv("BATCH_SIZE",    "4"))    # micro-batch; use GRAD_ACCUM for effective BS
-    GRAD_ACCUM   = int(os.getenv("GRAD_ACCUM",     "4"))   # steps before optimizer.step() → effective BS = BATCH_SIZE × GRAD_ACCUM
-    LEARNING_RATE = float(os.getenv("LR",          "0.0003"))
-    EPOCHS        = int(os.getenv("EPOCHS",         "80"))
-    SEED          = int(os.getenv("SEED",           "42"))
-    NUM_WORKERS   = int(os.getenv("NUM_WORKERS",     "4"))   # 4 on Linux, 0 on macOS
+    BATCH_SIZE     = int(os.getenv("BATCH_SIZE",    "4"))
+    GRAD_ACCUM     = int(os.getenv("GRAD_ACCUM",     "4"))
+    LEARNING_RATE  = float(os.getenv("LR",          "0.0003"))
+    EPOCHS          = int(os.getenv("EPOCHS",         "80"))
+    SEED            = int(os.getenv("SEED",           "42"))
+    NUM_WORKERS     = int(os.getenv("NUM_WORKERS",     "4"))
 
     # ── Device ───────────────────────────────────────────────────────────────
     DEVICE = torch.device(
         "cuda" if torch.cuda.is_available() else "cpu"
     )
 
-    # ── STN / RealESRGAN ────────────────────────────────────────────────────
-    USE_STN  = os.getenv("USE_STN",  "1") == "1"
+    # ── SR module ────────────────────────────────────────────────────────────
     USE_SR   = os.getenv("USE_SR",   "1") == "1"
-    SR_SCALE = 2   # each RRDB block upscales 2× (total: 4×)
 
     # ── W&B ─────────────────────────────────────────────────────────────────
     WANDB_API_KEY = os.getenv("WANDB_API_KEY", "")

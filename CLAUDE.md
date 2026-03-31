@@ -4,23 +4,23 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**Multi-Frame License Plate Recognition (LPR)** — recognizes plate text from video tracks using a ConvNeXt + Transformer CRNN architecture with CTC loss. Handles Brazilian/Mercosur-format plates (3 letters + 4 digits, e.g. `AVL5215`). Supports mixed-resolution input: 50/50 LR frames and degraded HR frames during training.
+**Multi-Frame License Plate Recognition (LPR)** — 2-module pipeline:
+- **Module 1 (LightSR):** Upscales LR frames (64×256) → HR frames (256×1024), 4× scale
+- **Module 2 (CRNN):** ConvNeXt Tiny + BiLSTM + CTC — recognizes plate text from HR frames
 
-## Commands (Vast.ai / pip)
+Supports Brazilian/Mercosur-format plates (3 letters + 4 digits, e.g. `AVL5215`).
+
+## Commands
 
 ```bash
 # Install dependencies
 pip install -r requirements.txt
 
-# Download dataset (run once)
+# Download dataset
 bash run.sh download
 
-# Train — all params via env vars
-WANDB_API_KEY=your_key \
-BATCH_SIZE=16 \
-NUM_WORKERS=4 \
-EPOCHS=80 \
-  bash run.sh train
+# Train
+WANDB_API_KEY=your_key BATCH_SIZE=16 NUM_WORKERS=4 EPOCHS=80 bash run.sh train
 
 # Evaluate on held-out test set
 cp best_model.pth best_model2.pth
@@ -28,86 +28,96 @@ bash run.sh test
 
 # Quick architecture sanity check
 python verify_haf.py
-
-# Patch notebook with latest config/architecture
-python update_nb.py
 ```
 
-**Vast.ai environment variables:**
+**Environment variables:**
 
 | Variable | Default | Description |
 |---|---|---|
 | `WANDB_API_KEY` | — | Required for training |
 | `WANDB_PROJECT` | `icpr-2026-lpr` | W&B project name |
-| `BATCH_SIZE` | `16` | Adjust for GPU memory |
+| `BATCH_SIZE` | `4` | Micro-batch |
 | `NUM_WORKERS` | `4` | DataLoader workers |
 | `EPOCHS` | `80` | Number of epochs |
 | `LR` | `0.0003` | Learning rate |
-| `USE_STN` | `1` | Enable STN (0/1) |
-| `USE_SR` | `1` | Enable RealESRGAN (0/1) |
+| `USE_SR` | `1` | Enable LightSR (0/1) |
 | `DATA_ROOT` | `data/train` | Path to train data |
 
 ## Architecture
 
+### Module 1: LightSR (Super-Resolution)
+
+```
+Input [B*T, 3, 64, 256]
+    → Shallow feature (3→64) + ReLU
+    → 2× ResidualBlock
+    → Fusion conv
+    → Up1: PixelShuffle 2× → [B*T, 3, 128, 512]
+    → Up2: PixelShuffle 2× → [B*T, 3, 256, 1024]
+    + Bilinear 4× skip connection
+Output [B*T, 3, 256, 1024]
+```
+
+### Module 2: Recognition CRNN
+
 ```
 Input [B, T=5, 3, 64, 256]
+    │
+    │  Module 1 (LightSR): 4× upscale
+    ▼
+SR frames [B*T, 3, 256, 1024]
+    │
+    ▼  Module 2
+ConvNeXt Tiny (pretrained) → [B*T, 768, 8, 32]
     ↓
-STN (geometric correction)  →  [B*T, 3, 64, 256]
+ConvProj (768→256) → [B*T, 256, H', W']
     ↓
-RealESRGAN ×2 (2× PixelShuffle each)  →  [B*T, 3, 256, 1024]
+Select center frame → [B, 256, H', W']
     ↓
-ConvNeXt Tiny Backbone (pretrained)  →  [B*T, 768, 8, 32]
+AdaptiveAvgPool (H'→8, W'→1) + Permute → [B, 8, 256]
     ↓
-ConvProj (768→512, H:8→1)  →  [B*T, 512, 1, 32]
+BiLSTM (1 layer, 256 hidden) → [B, 8, 512]
     ↓
-HybridAttentionFusion  →  [B, 512, 1, 32]
-    ↓
-AdaptiveAvgPool + Permute  →  [B, 32, 512]
-    ↓
-PositionalEncoding (sinusoidal) + TransformerEncoder (6 layers, d=512, 8 heads)
-    ↓
-FC + LogSoftmax  →  [B, 32, 38]
+FC + LogSoftmax → [B, 8, 37]
 ```
 
-**HybridAttentionFusion** — 3 mechanisms combined:
-1. **Temporal Gating** — per-frame quality weight via pooled features → sigmoid
-2. **Ref-Aware Spatial Attention** — each frame concatenated with center frame, softmax-weighted sum
-3. **Channel Attention** — SE-style post-fusion channel refinement
-
-**STN** — Spatial Transformer. Localization CNN predicts 6 affine params per frame; `F.grid_sample` applies correction.
-
-**RealESRGAN** — 2 stacked blocks: 2× RRDB + PixelShuffle + skip connection. Total 4× super-resolution.
+**Design decisions:**
+- **No STN:** License plate images are already relatively straight
+- **No multi-frame fusion:** All frames in a track are identical (plate is static)
+- **BiLSTM instead of Transformer:** 7 characters is too short for Transformer; LSTM is lighter and sufficient
+- **Center frame selection:** Simple and effective since all frames are the same
 
 ## Data Format
 
 ```
 data/train/  (Scenario-A/{Brazilian,Mercosur}/track_XXXXX/)
     └── track_XXXXX/
-        ├── annotations.json   # {"plate_text": "AVL5215", "plate_layout": ..., "corners": {...}}
-        ├── lr-001.png … lr-005.png  # Low-res (~32×16 px)
-        └── hr-001.png … hr-005.png  # High-res (~60×30 px)
+        ├── annotations.json   # {"plate_text": "AVL5215"}
+        ├── lr-001.png … lr-005.png  # Low-res (~50×25 px)
+        └── hr-001.png … hr-005.png  # High-res (~60×30 px, optional in train)
+
+Test set: only LR frames (5 per track) → Module 1 generates HR → Module 2 recognizes
 ```
 
 ## Train / Val / Test Split
 
 | Set | Size | Source |
 |---|---|---|
-| Train | 14,400 | 80% of non-test tracks |
-| Val | 3,600 | 20% of non-test tracks |
-| Test | 2,000 | `notebook/test_tracks.json` |
+| Train | 80% | Non-test tracks |
+| Val | 20% | Non-test tracks |
+| Test | 2000 tracks | `notebook/test_tracks.json` |
 
-- `AdvancedMultiFrameDataset` auto-excludes test tracks from train/val
-- `TestDataset` reads test tracks from `data/train/` using `TEST_TRACKS_FILE`
+- Test tracks excluded from train/val
 - `val_tracks.json` — persisted split (seed=42). Delete to regenerate.
 
 ## Key Training Details
 
-- **Gradual unfreezing**: phase 0 (ep 0–4) freeze backbone+SR/STN → phase 1 (ep 5–9) unlock SR → phase 2 (ep 10+) stochastic backbone freeze
-- **Mixup**: 15% chance, beta(1,1)
-- **Scheduler**: OneCycleLR — 30% warmup, cosine annealing
-- **Mixed precision**: AMP GradScaler on CUDA, grad clip max_norm=1.0
-- **Augmentation**: affine/elastic/perspective + brightness + blur/noise + coarse dropout
-- **CTC decoding**: greedy (beam_width=1) train/val; beam search (beam_width=5) + format filter in `test.py`
+- **Gradual unfreezing:** phase 0 (ep 0–4) freeze SR+backbone → phase 1 (ep 5–9) unlock SR → phase 2 (ep 10+) stochastic backbone freeze
+- **Mixup:** 15% chance, beta(1,1)
+- **Scheduler:** OneCycleLR — 30% warmup, cosine annealing
+- **Mixed precision:** AMP GradScaler on CUDA, grad clip max_norm=1.0
+- **Augmentation:** affine/elastic/perspective + brightness + blur/noise + coarse dropout
+- **CTC decoding:** greedy (beam_width=1) train/val; beam search (beam_width=5) + Brazilian plate format filter in test
 
 ## Model File Naming
 
@@ -126,18 +136,12 @@ Project: `icpr-2026-lpr`. Run URL printed at start of training.
 | Every epoch | `train_loss`, `val_loss`, `val_acc`, `val_char_acc`, duration, LR |
 | On improvement | `best_model.pth` + W&B Artifact upload |
 
-`wandb.watch(model)` logs gradients periodically. Config (model, data, hyperparams) auto-logged.
-
 ## Key Utilities (`utils.py`)
 
 - `decode_predictions(log_probs, idx2char, beam_width, use_format_filter)` — CTC greedy or beam search
-- `vietnam_plate_score(text)` — plate format validity scorer (used by beam search filter)
-- `seed_everything(seed)` — reproducibility across all random libs
+- `brazil_plate_score(text)` — Brazilian plate format validity scorer (used by beam search filter)
+- `seed_everything(seed)` — reproducibility
 
-## Known Discrepancies
+## Character Set
 
-| Issue | Detail |
-|---|---|
-| Frame count | `Config.NUM_FRAMES=8` but dataset always caps at **5 frames** |
-| Dead code | `ultimate_sync.py` has hardcoded Windows paths — unused |
-| Stale docs | `README.md` references Swin Transformer; actual backbone is ConvNeXt Tiny |
+Brazilian/Mercosur format: `0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ` (36 classes + 1 CTC blank = 37 total)
