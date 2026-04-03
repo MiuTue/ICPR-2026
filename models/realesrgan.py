@@ -52,8 +52,12 @@ class DenseLayer(nn.Module):
     def __init__(self, channels: int, growth_channels: int = 32):
         super().__init__()
         self.conv = nn.Conv2d(channels, growth_channels, kernel_size=3, padding=1)
+        # negative_slope=0.2 là chuẩn cho các model GAN học thuật
+        self.lrelu = nn.LeakyReLU(negative_slope=0.2, inplace=True)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = self.lrelu(self.conv(x))
+        
         return torch.cat([x, self.conv(x)], dim=1)
 
 
@@ -82,27 +86,18 @@ class RRDB(nn.Module):
         super().__init__()
         self.residual_scaling = residual_scaling
 
-        self.conv1 = nn.Conv2d(channels, growth_channels, kernel_size=3, padding=1)
-        self.conv2 = nn.Conv2d(
-            channels + growth_channels, growth_channels, kernel_size=3, padding=1
-        )
-        self.conv3 = nn.Conv2d(
-            channels + 2 * growth_channels, growth_channels, kernel_size=3, padding=1
-        )
-        self.conv_bypass = nn.Conv2d(
-            channels + 3 * growth_channels, channels, kernel_size=3, padding=1
+        self.dense_blocks = nn.Sequential(
+            DenseLayer(channels, growth_channels),                       # C -> C+G
+            DenseLayer(channels + growth_channels, growth_channels),      # C+G -> C+2G
+            DenseLayer(channels + 2 * growth_channels, growth_channels),  # C+2G -> C+3G
+            DenseLayer(channels + 3 * growth_channels, growth_channels),  # C+3G -> C+4G
+            # Lớp cuối cùng nén tất cả về lại channels ban đầu
+            nn.Conv2d(channels + 4 * growth_channels, channels, 3, 1, 1)
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        identity = x
-
-        x1 = self.conv1(x)
-        x2 = self.conv2(torch.cat([x, x1], dim=1))
-        x3 = self.conv3(torch.cat([x, x1, x2], dim=1))
-
-        x = self.conv_bypass(torch.cat([x, x1, x2, x3], dim=1))
-
-        return identity + x * self.residual_scaling
+        # Residual connection
+        return x + self.dense_blocks(x) * self.residual_scaling
 
 
 # ---------------------------------------------------------------------------
@@ -110,15 +105,27 @@ class RRDB(nn.Module):
 # ---------------------------------------------------------------------------
 
 class UpsampleBlock(nn.Module):
-    def __init__(self, channels: int, scale: int = 2):
+    def __init__(self, features: int):
         super().__init__()
-        self.up = nn.Sequential(
-            nn.Conv2d(channels, channels * scale * scale, kernel_size=3, padding=1),
-            nn.PixelShuffle(scale),
+        self.upsample = nn.Sequential(
+            # --- Bước 1: Phóng to 2x (H, W -> 2H, 2W) ---
+            nn.Conv2d(features, features * 4, kernel_size=3, padding=1),
+            nn.PixelShuffle(2),
+            nn.LeakyReLU(0.2, inplace=True),
+            
+            # --- Lớp Conv trung gian (Bảo toàn features và H, W) ---
+            # Giúp tinh chỉnh đặc trưng trước khi phóng lần 2
+            nn.Conv2d(features, features, kernel_size=3, padding=1),
+            nn.LeakyReLU(0.2, inplace=True),
+            
+            # --- Bước 2: Phóng to 2x tiếp (2H, 2W -> 4H, 4W) ---
+            nn.Conv2d(features, features * 4, kernel_size=3, padding=1),
+            nn.PixelShuffle(2),
+            nn.LeakyReLU(0.2, inplace=True)
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.up(x)
+        return self.upsample(x)
 
 
 # ---------------------------------------------------------------------------
