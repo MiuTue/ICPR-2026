@@ -19,9 +19,9 @@ class Config:
     CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-"
     
     # Training hyperparameters
-    BATCH_SIZE = 128
-    LEARNING_RATE = 0.0005
-    EPOCHS = 80
+    BATCH_SIZE = 64
+    LEARNING_RATE = 0.0003
+    EPOCHS = 50
     SEED = 42
     NUM_WORKERS = 4
     
