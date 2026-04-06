@@ -95,7 +95,7 @@ def train_pipeline():
         epoch_loss_sr = 0
         
         pbar = tqdm(train_loader, desc=f"Ep {epoch+1}/{Config.EPOCHS}")
-        for lr_images, hr_images, targets, target_lengths, _ in pbar:
+        for lr_images, hr_images, targets, target_lengths, labels_text, track_ids in pbar:
             lr_images = lr_images.to(Config.DEVICE)
             hr_images = hr_images.to(Config.DEVICE)
             targets = targets.to(Config.DEVICE)
