@@ -148,7 +148,7 @@ def train_pipeline():
             total_samples = 0
             
             with torch.no_grad():
-                for lr_images, hr_images, targets, target_lengths, labels_text in val_loader:
+                for lr_images, hr_images, targets, target_lengths, labels_text, track_ids in val_loader:
                     lr_images = lr_images.to(Config.DEVICE)
                     hr_images = hr_images.to(Config.DEVICE)
                     targets = targets.to(Config.DEVICE)
