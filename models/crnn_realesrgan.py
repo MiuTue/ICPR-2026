@@ -12,6 +12,179 @@ from torchvision.models import convnext_tiny, ConvNeXt_Tiny_Weights
 
 
 # ============================================================================
+# Free (standalone) functions — SR and ConvNeXt backbone
+# ============================================================================
+
+def edsr_sr_free(
+    in_channels: int = 3,
+    out_channels: int = 3,
+    features: int = 256,
+    num_blocks: int = 16,
+    residual_scale: float = 0.1,
+    dropout: float = 0.0,
+) -> nn.Module:
+    """
+    Free (standalone) EDSR-style SR network with optional dropout.
+
+    Architecture:
+        Input [B,3,H,W]
+          | Conv(in->features)
+          ├───────────────────────────┐
+          |  num_blocks × EDSRResBlock  │
+          |  (with optional Dropout2d)  │
+          └───────────────────────────┘
+          |  Conv(features->features)
+          |  PixelShuffle ×2  (2× upscale)
+          |  Conv(features->out)
+          ▼
+        Output [B,3,2H,2W]
+    """
+    _DROPOUT = dropout  # closure variable for inner class
+
+    class _EDSRResBlock(nn.Module):
+        def __init__(self, channels: int, scale: float):
+            super().__init__()
+            self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
+            self.relu  = nn.ReLU(inplace=True)
+            self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
+            self.scale = scale
+            self.drop  = nn.Dropout2d(p=_DROPOUT) if _DROPOUT > 0 else nn.Identity()
+
+        def forward(self, x):
+            h = self.drop(self.conv1(x))
+            h = self.conv2(self.relu(h))
+            return x + h * self.scale
+
+    body = nn.Sequential(*[
+        _EDSRResBlock(features, residual_scale) for _ in range(num_blocks)
+    ])
+
+    return nn.Sequential(
+        nn.Conv2d(in_channels, features, kernel_size=3, padding=1),   # head
+        body,                                                             # residual body
+        nn.Conv2d(features, features, kernel_size=3, padding=1),         # bypass
+        nn.Sequential(
+            nn.Conv2d(features, features * 4, kernel_size=3, padding=1),
+            nn.PixelShuffle(2),
+        ),                                                               # 2× upscale
+        nn.Conv2d(features, out_channels, kernel_size=3, padding=1),   # tail
+    )
+
+
+def realesrgan_free(
+    in_channels: int = 3,
+    out_channels: int = 3,
+    features: int = 64,
+    num_rrdb: int = 6,
+    growth_channels: int = 32,
+    residual_scaling: float = 0.2,
+    dropout: float = 0.0,
+) -> nn.Module:
+    """
+    Free (standalone) Real-ESRGAN SR network with optional dropout.
+
+    Architecture:
+        Input [B,3,H,W]
+          |  Conv(in->features)
+          ├────────────────────────────┐
+          |  num_rrdb × RRDB(64, G=32)  │
+          │  (with optional Dropout2d)  │
+          └────────────────────────────┘
+          |  Conv(features->features)  + global residual
+          |  UpsampleBlock (×4 spatial)
+          |  Conv(features->features)
+          |  Conv(features->out)
+          ▼
+        Output [B,3,4H,4W]
+    """
+    _DROPOUT = dropout
+
+    class _RRDBWithDropout(nn.Module):
+        def __init__(self, channels: int, growth: int, scale: float):
+            super().__init__()
+            self.dense_blocks = nn.Sequential(
+                nn.Conv2d(channels,                              growth, 3, 1, 1),
+                nn.LeakyReLU(0.2, inplace=True),
+                nn.Dropout2d(p=_DROPOUT) if _DROPOUT > 0 else nn.Identity(),
+                nn.Conv2d(channels + growth,                     growth, 3, 1, 1),
+                nn.LeakyReLU(0.2, inplace=True),
+                nn.Dropout2d(p=_DROPOUT) if _DROPOUT > 0 else nn.Identity(),
+                nn.Conv2d(channels + 2 * growth,                 growth, 3, 1, 1),
+                nn.LeakyReLU(0.2, inplace=True),
+                nn.Dropout2d(p=_DROPOUT) if _DROPOUT > 0 else nn.Identity(),
+                nn.Conv2d(channels + 3 * growth,                 channels, 3, 1, 1),
+            )
+            self.scale = scale
+
+        def forward(self, x):
+            return x + self.dense_blocks(x) * self.scale
+
+    class _UpsampleBlockLocal(nn.Module):
+        def __init__(self, C: int):
+            super().__init__()
+            self.net = nn.Sequential(
+                nn.Conv2d(C, C * 4, 3, 1, 1), nn.PixelShuffle(2), nn.LeakyReLU(0.2, inplace=True),
+                nn.BatchNorm2d(C),
+                nn.Conv2d(C, C, 3, 1, 1),     nn.LeakyReLU(0.2, inplace=True),
+                nn.BatchNorm2d(C),
+                nn.Conv2d(C, C * 4, 3, 1, 1), nn.PixelShuffle(2), nn.LeakyReLU(0.2, inplace=True),
+                nn.BatchNorm2d(C),
+                nn.Conv2d(C, C, 3, 1, 1),     nn.LeakyReLU(0.2, inplace=True),
+                nn.BatchNorm2d(C),
+            )
+
+        def forward(self, x):
+            return self.net(x)
+
+    trunk = nn.Sequential(*[
+        _RRDBWithDropout(features, growth_channels, residual_scaling)
+        for _ in range(num_rrdb)
+    ])
+
+    return nn.Sequential(
+        nn.Conv2d(in_channels, features, 3, 1, 1),    # conv_first
+        trunk,                                          # trunk
+        nn.Conv2d(features, features, 3, 1, 1),       # conv_body
+        _UpsampleBlockLocal(features),                  # ×4 upscale
+        nn.Sequential(
+            nn.Conv2d(features, features, 3, 1, 1),
+            nn.Conv2d(features, out_channels, 3, 1, 1),
+        ),
+    )
+
+
+def convnext_free(
+    in_channels: int = 3,
+    d_model: int = 512,
+    dropout: float = 0.0,
+) -> nn.Module:
+    """
+    Free (standalone) ConvNeXt-Tiny backbone with optional dropout.
+
+    Returns a nn.Module that:
+        [B, 3, H, W]
+          |  ConvNeXt-Tiny features (frozen pretrained)
+          |  Conv(768->d_model) + Dropout2d + BN + ReLU
+          |  AdaptiveAvgPool H->1
+          |  Squeeze + Permute
+          ▼
+        [B, T, d_model]
+
+    T = W' (width after ConvNeXt downsampling, depends on input H/W).
+    """
+    convnext = convnext_tiny(weights=ConvNeXt_Tiny_Weights.DEFAULT)
+
+    return nn.Sequential(
+        convnext.features,                                               # frozen ConvNeXt
+        nn.Conv2d(768, d_model, kernel_size=3, padding=1),
+        nn.Dropout2d(p=dropout) if dropout > 0 else nn.Identity(),
+        nn.BatchNorm2d(d_model),
+        nn.ReLU(inplace=True),
+        nn.AdaptiveAvgPool2d((1, None)),                                 # pool H to 1
+    )
+
+
+# ============================================================================
 # Positional Encoding
 # ============================================================================
 
@@ -76,7 +249,7 @@ class RRDB(nn.Module):
     """
     def __init__(
         self,
-        channels: int,
+        channels: int,  
         growth_channels: int = 32,
         residual_scaling: float = 0.2,
     ):
@@ -117,16 +290,20 @@ class UpsampleBlock(nn.Module):
             nn.Conv2d(features, features * 4, kernel_size=3, padding=1),  # C->4C
             nn.PixelShuffle(2),                                              # [B,4C,H,W]->[B,C,2H,2W]
             nn.LeakyReLU(0.2, inplace=True),
+            nn.BatchNorm2d(features),
             # --- Refinement conv (preserve C, H, W) ---
             nn.Conv2d(features, features, kernel_size=3, padding=1),        # C->C, [B,C,2H,2W]
             nn.LeakyReLU(0.2, inplace=True),
+            nn.BatchNorm2d(features),
             # --- Step 2: x2 upscale + refine ---
             nn.Conv2d(features, features * 4, kernel_size=3, padding=1),  # C->4C
             nn.PixelShuffle(2),                                              # [B,4C,2H,2W]->[B,C,4H,4W]
             nn.LeakyReLU(0.2, inplace=True),
+            nn.BatchNorm2d(features),
             # --- Refinement conv (preserve C, H, W) ---
             nn.Conv2d(features, features, kernel_size=3, padding=1),        # C->C, [B,C,4H,4W]
             nn.LeakyReLU(0.2, inplace=True),
+            nn.BatchNorm2d(features),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -239,6 +416,7 @@ class ConvProj(nn.Module):
     With RealESRGAN output (128x512) -> ConvNeXt -> [B, 768, 4, 16]:
         [B, 768, 4, 16]          (ConvNeXt output for 128x512 input)
           | Conv(768->512): 3x3    -> [B, 512, 4, 16]
+          | Dropout2d (optional)
           | BatchNorm + ReLU
           | AdaptiveAvgPool H->1   -> [B, 512, 1, 16]
           | squeeze(2)             -> [B, 512, 16]
@@ -248,12 +426,18 @@ class ConvProj(nn.Module):
     NOTE: ConvNeXt output spatial size depends on input resolution.
           This ConvProj handles any H', W' via AdaptiveAvgPool2d((1, None)).
     """
-    def __init__(self, in_channels: int = 768, d_model: int = 512):
+    def __init__(
+        self,
+        in_channels: int = 768,
+        d_model: int = 512,
+        dropout: float = 0.0,
+    ):
         super().__init__()
         self.proj = nn.Sequential(
             # --- Channel compression + refinement ---
             nn.Conv2d(in_channels, d_model, kernel_size=3, padding=1),
             # [B, 768, H', W'] -> [B, 512, H', W']
+            nn.Dropout2d(p=dropout) if dropout > 0 else nn.Identity(),
             nn.BatchNorm2d(d_model),
             nn.ReLU(inplace=True),
             # --- Spatial: pool H to 1, keep W as CTC timesteps ---
@@ -290,7 +474,12 @@ class EndToEndLPR(nn.Module):
         -> [B,  16, 512]            PositionalEncoding + TransformerEncoder
         -> [B,  16, NUM_CLASSES]   FC + LogSoftmax (CTC blank=0)
     """
-    def __init__(self, num_classes: int, d_model: int = 512):
+    def __init__(
+        self,
+        num_classes: int,
+        d_model: int = 512,
+        dropout: float = 0.1,
+    ):
         super().__init__()
 
         # 1. Super-Resolution: Real-ESRGAN (x4 upscale)
@@ -307,22 +496,60 @@ class EndToEndLPR(nn.Module):
         # 2. Recognition: ConvNeXt-Tiny backbone (frozen pretrained)
         self.backbone = ConvNeXtBackbone()
 
-        # 3. ConvProj: [B,768,H',W'] -> [B,T,d_model=512]
-        self.conv_proj = ConvProj(in_channels=768, d_model=d_model)
+        # 3. ConvProj: [B,768,H',W'] -> [B,T,d_model=512] (with optional dropout)
+        self.conv_proj = ConvProj(in_channels=768, d_model=d_model, dropout=dropout)
 
-        # 4. Positional encoding + Transformer Encoder
+        # 4. Positional encoding + Transformer Encoder (with dropout)
         self.pos_encoder = PositionalEncoding(d_model=d_model)
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model,
             nhead=4,                   # 512/4=128 per head; 4 heads
             dim_feedforward=d_model * 4,
-            dropout=0.1,
+            dropout=dropout,            # attention dropout
             batch_first=True,
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=4)
 
-        # 5. Output: FC -> LogSoftmax (CTC blank index = 0)
+        # 5. Output: FC + Dropout -> LogSoftmax (CTC blank index = 0)
+        self.dropout_fc = nn.Dropout(p=dropout)
         self.fc = nn.Linear(d_model, num_classes)
+
+        # ConvNeXt backbone: frozen by default (pretrained, no fine-tune at start)
+        for param in self.backbone.parameters():
+            param.requires_grad = False
+        self._backbone_frozen = True
+
+        # Real-ESRGAN SR module: also frozen by default for the first few epochs
+        for param in self.sr_module.parameters():
+            param.requires_grad = False
+        self._sr_frozen = True
+
+    def maybe_unfreeze(self, epoch: int, freeze_until_epoch: int = 5):
+        """
+        Unfreeze ConvNeXt backbone AND Real-ESRGAN SR module after
+        `freeze_until_epoch` epochs.
+
+        Call once per epoch in the training loop:
+            model.maybe_unfreeze(epoch, freeze_until_epoch=5)
+        """
+        unfroze_backbone = False
+        unfroze_sr = False
+
+        if self._backbone_frozen and epoch >= freeze_until_epoch:
+            for param in self.backbone.parameters():
+                param.requires_grad = True
+            self._backbone_frozen = False
+            unfroze_backbone = True
+
+        if self._sr_frozen and epoch >= freeze_until_epoch:
+            for param in self.sr_module.parameters():
+                param.requires_grad = True
+            self._sr_frozen = False
+            unfroze_sr = True
+
+        if unfroze_backbone or unfroze_sr:
+            return True
+        return False
 
     def forward(self, x: torch.Tensor):
         # x: [B, 3, 32, 128]
@@ -331,6 +558,7 @@ class EndToEndLPR(nn.Module):
         seq      = self.conv_proj(features)       # [B,  16, 512]       (T=16 timesteps)
         seq      = self.pos_encoder(seq)          # [B,  16, 512]       (+ positional)
         out      = self.transformer(seq)          # [B,  16, 512]       (4-layer encoder)
+        out      = self.dropout_fc(out)           # dropout before FC
         logits   = self.fc(out).log_softmax(2)    # [B,  16, NUM_CLASSES]
 
         return sr_img, logits  # (SR for MSE loss, CTC logits for recognition)

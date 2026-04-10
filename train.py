@@ -16,13 +16,46 @@ from tqdm import tqdm
 try:
     from .config import Config
     from .dataset import EndToEndDataset
-    from .models.crnn import EndToEndLPR
+    from .models.crnn_realesrgan import EndToEndLPR
     from .utils import seed_everything, decode_predictions
 except ImportError:
     from config import Config
     from dataset import EndToEndDataset
-    from models.crnn import EndToEndLPR
+    from models.crnn_realesrgan import EndToEndLPR
     from utils import seed_everything, decode_predictions
+
+
+# ============================================================================
+# MixUp Data Augmentation
+# ============================================================================
+
+def mixup_data(
+    lr_images: torch.Tensor,
+    hr_images: torch.Tensor,
+    targets: torch.Tensor,
+    target_lengths: torch.Tensor,
+    labels_text: list,
+    mixup_ratio: float = 0.3,
+) -> tuple:
+    """
+    Apply MixUp on a batch with probability = mixup_ratio.
+    λ is sampled uniformly from (0, 1) for each applied MixUp.
+
+    For CTC loss: labels_text is kept as-is (greedy decode still works).
+    SR loss uses mixed HR images directly.
+    """
+    B = lr_images.size(0)
+    if B < 2:
+        return lr_images, hr_images, targets, target_lengths, labels_text
+
+    if torch.rand(1).item() < mixup_ratio:
+        idx = torch.randperm(B)
+        lam = torch.rand(1).item()  # λ ∈ (0, 1)
+
+        lr_images = lam * lr_images + (1 - lam) * lr_images[idx]
+        hr_images = lam * hr_images + (1 - lam) * hr_images[idx]
+
+    return lr_images, hr_images, targets, target_lengths, labels_text
 
 
 def train_pipeline():
@@ -89,6 +122,11 @@ def train_pipeline():
     
     # Training loop
     for epoch in range(Config.EPOCHS):
+        # Unfreeze ConvNeXt backbone after freeze_until_epoch epochs (default=5)
+        unfroze = model.maybe_unfreeze(epoch + 1, freeze_until_epoch=5)
+        if unfroze:
+            print(f" -> 🔓 ConvNeXt backbone & Real-ESRGAN UNFROZEN at epoch {epoch + 1}")
+
         model.train()
         epoch_loss = 0
         epoch_loss_ctc = 0
@@ -99,7 +137,12 @@ def train_pipeline():
             lr_images = lr_images.to(Config.DEVICE)
             hr_images = hr_images.to(Config.DEVICE)
             targets = targets.to(Config.DEVICE)
-            
+
+            # MixUp augmentation (30% probability per batch)
+            lr_images, hr_images, targets, target_lengths, labels_text = mixup_data(
+                lr_images, hr_images, targets, target_lengths, labels_text, mixup_ratio=0.3
+            )
+
             optimizer.zero_grad(set_to_none=True)
             
             with autocast('cuda'):
