@@ -15,7 +15,7 @@ def seed_everything(seed=42):
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-    print(f"🔒 Đã cố định Seed: {seed}")
+    print(f"Fixed Seed: {seed}")
 
 
 def decode_predictions(preds, idx2char):

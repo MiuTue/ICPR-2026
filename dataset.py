@@ -42,7 +42,7 @@ class EndToEndDataset(Dataset):
         all_tracks = sorted(glob.glob(search_path, recursive=True))
         
         if not all_tracks:
-            print("❌ LỖI: Không tìm thấy data.")
+            print("ERROR: Data not found.")
             return
 
         # Only split if it's training or validation on train set
@@ -60,7 +60,7 @@ class EndToEndDataset(Dataset):
         val_tracks = []
         
         if os.path.exists(Config.VAL_SPLIT_FILE):
-            print(f"📂 Loading split from '{Config.VAL_SPLIT_FILE}'...")
+            print(f"Loading split from '{Config.VAL_SPLIT_FILE}'...")
             try:
                 with open(Config.VAL_SPLIT_FILE, 'r') as f:
                     val_ids = set(json.load(f))
@@ -92,6 +92,9 @@ class EndToEndDataset(Dataset):
         return train_tracks, val_tracks
     
     def _load_samples(self, tracks):
+        """Pairs LR and HR files within each track based on numeric suffix."""
+        import re
+        
         for track_path in tqdm(tracks, desc=f"Indexing {self.mode}"):
             json_path = os.path.join(track_path, "annotations.json")
             label = ""
@@ -99,31 +102,37 @@ class EndToEndDataset(Dataset):
                 try:
                     with open(json_path, 'r') as f:
                         data = json.load(f)
-                    if isinstance(data, list):
-                        data = data[0]
-                    label = data.get('plate_text', data.get('license_plate', data.get('text', '')))
+                    if isinstance(data, list): data = data[0]
+                    label = str(data.get('plate_text', data.get('license_plate', data.get('text', '')))).strip()
                 except:
                     pass
             
-            # If training, we MUST have a label
+            # Label required for training
             if self.mode == 'train' and not label:
                 continue
 
-            lr_files = sorted(glob.glob(os.path.join(track_path, "lr-*.png")) + glob.glob(os.path.join(track_path, "lr-*.jpg")))
-            hr_files = sorted(glob.glob(os.path.join(track_path, "hr-*.png")) + glob.glob(os.path.join(track_path, "hr-*.jpg")))
+            lr_paths = glob.glob(os.path.join(track_path, "lr-*.[jp][pn]g"))
+            hr_paths = glob.glob(os.path.join(track_path, "hr-*.[jp][pn]g"))
             
-            if not lr_files and not hr_files:
-                continue
+            # Map by numeric suffix (e.g., 'cr-12.jpg' -> '12')
+            def get_id(path):
+                match = re.search(r'-(\d+)\.', os.path.basename(path))
+                return match.group(1) if match else None
 
-            # Pair them up
-            for i in range(max(len(lr_files), len(hr_files))):
-                lr_path = lr_files[i % len(lr_files)] if lr_files else None
-                hr_path = hr_files[i % len(hr_files)] if hr_files else None
+            hr_map = {get_id(p): p for p in hr_paths if get_id(p) is not None}
+            lr_map = {get_id(p): p for p in lr_paths if get_id(p) is not None}
+            
+            # Combine all available IDs
+            all_ids = set(hr_map.keys()) | set(lr_map.keys())
+            
+            for img_id in sorted(all_ids, key=lambda x: int(x) if x.isdigit() else 0):
+                lr_p = lr_map.get(img_id)
+                hr_p = hr_map.get(img_id)
                 
-                if lr_path or hr_path:
+                if lr_p or hr_p:
                     self.samples.append({
-                        'lr_path': lr_path,
-                        'hr_path': hr_path,
+                        'lr_path': lr_p,
+                        'hr_path': hr_p,
                         'label': label,
                         'track_id': os.path.basename(track_path)
                     })
@@ -142,26 +151,34 @@ class EndToEndDataset(Dataset):
     def __getitem__(self, idx):
         item = self.samples[idx]
         label = item['label']
-        
-        lr_img = self._read_image(item['lr_path'])
-        hr_img = self._read_image(item['hr_path'])
 
-        # Fallbacks if one is missing
-        if lr_img is None and hr_img is not None:
-            lr_img = cv2.resize(hr_img, (Config.IMG_WIDTH, Config.IMG_HEIGHT))
-            if self.mode == 'train' and self.degrade:
-                lr_img = self.degrade(image=lr_img)['image']
-        elif hr_img is None and lr_img is not None:
-            hr_img = cv2.resize(lr_img, (Config.HR_IMG_WIDTH, Config.HR_IMG_HEIGHT))
+        # 1. Load HR as the ground truth
+        hr_img = self._read_image(item['hr_path'])
+        lr_img = self._read_image(item['lr_path'])
+
+        # 2. Logic for generating LR
+        # If training, we often prefer synthetically degraded LR for better generalization
+        is_synthetic = False
+        if self.mode == 'train' and self.degrade and (random.random() < 0.6 or lr_img is None):
+            if hr_img is not None:
+                # Proper Pipeline: HR -> Degrade -> Scale Down
+                # This simulates real-world camera degradation before resolution loss
+                temp_img = self.degrade(image=hr_img)['image']
+                lr_img = cv2.resize(temp_img, (Config.IMG_WIDTH, Config.IMG_HEIGHT), interpolation=cv2.INTER_AREA)
+                is_synthetic = True
+
+        # Fallback Resizing if necessary
+        if hr_img is None and lr_img is not None:
+            hr_img = cv2.resize(lr_img, (Config.HR_IMG_WIDTH, Config.HR_IMG_HEIGHT), interpolation=cv2.INTER_CUBIC)
+        elif lr_img is None and hr_img is not None:
+            lr_img = cv2.resize(hr_img, (Config.IMG_WIDTH, Config.IMG_HEIGHT), interpolation=cv2.INTER_AREA)
         elif lr_img is None and hr_img is None:
+            # Absolute fallback: black images
             lr_img = np.zeros((Config.IMG_HEIGHT, Config.IMG_WIDTH, 3), dtype=np.uint8)
             hr_img = np.zeros((Config.HR_IMG_HEIGHT, Config.HR_IMG_WIDTH, 3), dtype=np.uint8)
 
-        # Apply degradations randomly during training to HR to create better LR
-        if self.mode == 'train' and self.degrade and random.random() < 0.5:
-            lr_img = cv2.resize(hr_img, (Config.IMG_WIDTH, Config.IMG_HEIGHT))
-            lr_img = self.degrade(image=lr_img)['image']
-
+        # 3. Apply final resizing and normalization via transforms
+        # (Transforms handle standard augmentations and ToTensor)
         lr_tensor = self.transform_lr(image=lr_img)['image']
         hr_tensor = self.transform_hr(image=hr_img)['image']
 

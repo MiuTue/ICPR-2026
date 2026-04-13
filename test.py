@@ -19,7 +19,7 @@ except ImportError:
 def test_pipeline():
     seed_everything(Config.SEED)
     print("\n" + "="*60)
-    print("🧪 EVALUATING ON TEST SET...")
+    print("EVALUATING ON TEST SET...")
     print("="*60)
 
     # Load Dataset
@@ -28,7 +28,7 @@ def test_pipeline():
     test_ds = EndToEndDataset(test_path, mode='test')
     
     if len(test_ds) == 0:
-        print("❌ Test loader không có dữ liệu!")
+        print("ERROR: Test loader has no data!")
         return
 
     test_loader = DataLoader(
@@ -48,7 +48,7 @@ def test_pipeline():
         print(f"📂 Loading weights from 'best_model.pth'...")
         model.load_state_dict(torch.load("best_model.pth", map_location=Config.DEVICE, weights_only=True))
     else:
-        print("⚠️ CẢNH BÁO: Không tìm thấy best_model.pth! Đang dùng trọng số ngẫu nhiên.")
+        print("WARNING: best_model.pth not found! Using random weights.")
     
     model.eval()
 
@@ -123,8 +123,8 @@ def test_pipeline():
             json.dump(test_results, f, indent=2)
         print(f"💾 Metrics saved to 'test_results.json'")
     else:
-        print("\nℹ️ Không có nhãn Ground Truth để tính toán độ chính xác.")
-        print(f"ℹ️ Đã hoàn thành inference cho {len(all_predictions)} mẫu.")
+        print("\nINFO: No Ground Truth labels available for accuracy calculation.")
+        print(f"INFO: Completed inference for {len(all_predictions)} samples.")
 
 if __name__ == "__main__":
     test_pipeline()

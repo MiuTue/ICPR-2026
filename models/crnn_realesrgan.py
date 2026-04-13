@@ -434,15 +434,17 @@ class ConvProj(nn.Module):
     ):
         super().__init__()
         self.proj = nn.Sequential(
+            # --- Upsample Width bằng x2 để tăng T (thời gian) cho CTC, giúp dễ phân tách các ký tự ---
+            nn.Upsample(scale_factor=(1, 2), mode='bilinear', align_corners=True),
             # --- Channel compression + refinement ---
             nn.Conv2d(in_channels, d_model, kernel_size=3, padding=1),
-            # [B, 768, H', W'] -> [B, 512, H', W']
+            # [B, 768, H', W'*2] -> [B, 512, H', W'*2]
             nn.Dropout2d(p=dropout) if dropout > 0 else nn.Identity(),
             nn.BatchNorm2d(d_model),
             nn.ReLU(inplace=True),
             # --- Spatial: pool H to 1, keep W as CTC timesteps ---
             nn.AdaptiveAvgPool2d((1, None)),
-            # [B, 512, H', W'] -> [B, 512, 1, W']
+            # [B, 512, H', W'*2] -> [B, 512, 1, W'*2]
         )
         self.T = None  # set dynamically from input in forward()
 
@@ -519,37 +521,62 @@ class EndToEndLPR(nn.Module):
             param.requires_grad = False
         self._backbone_frozen = True
 
-        # Real-ESRGAN SR module: also frozen by default for the first few epochs
+        # Real-ESRGAN SR module: ALWAYS TRAIN. Module này không pre-trained, bắt buộc train từ đầu.
         for param in self.sr_module.parameters():
-            param.requires_grad = False
-        self._sr_frozen = True
+            param.requires_grad = True
+        self._sr_frozen = False
+
+        # Snapshot of freeze state for eval restoration
+        self._saved_backbone_frozen = True
+        self._saved_sr_frozen = True
+
+    def set_freeze_mode(self, training_mode: bool):
+        """
+        Chỉ freeze/unfreeze backbone (ConvNeXt).
+        SR module (Real-ESRGAN) luôn luôn phải được học vì nó không có pre-trained weights.
+        """
+        # SR module luôn ở trạng thái được huấn luyện
+        for param in self.sr_module.parameters():
+            param.requires_grad = True
+        self._sr_frozen = False
+        
+        if training_mode:
+            # Unfreeze backbone
+            for param in self.backbone.parameters():
+                param.requires_grad = True
+            self._backbone_frozen = False
+        else:
+            # Freeze backbone
+            for param in self.backbone.parameters():
+                param.requires_grad = False
+            self._backbone_frozen = True
+
+    def save_freeze_state(self):
+        """Snapshot current freeze state (call before eval)."""
+        self._saved_backbone_frozen = self._backbone_frozen
+        self._saved_sr_frozen = self._sr_frozen
+
+    def restore_freeze_state(self):
+        """Restore freeze state from snapshot (call after eval)."""
+        # Restore SR
+        for param in self.sr_module.parameters():
+            param.requires_grad = not self._saved_sr_frozen
+        self._sr_frozen = self._saved_sr_frozen
+        # Restore backbone
+        for param in self.backbone.parameters():
+            param.requires_grad = not self._saved_backbone_frozen
+        self._backbone_frozen = self._saved_backbone_frozen
 
     def maybe_unfreeze(self, epoch: int, freeze_until_epoch: int = 5):
-        """
-        Unfreeze ConvNeXt backbone AND Real-ESRGAN SR module after
-        `freeze_until_epoch` epochs.
-
-        Call once per epoch in the training loop:
-            model.maybe_unfreeze(epoch, freeze_until_epoch=5)
-        """
-        unfroze_backbone = False
-        unfroze_sr = False
-
+        """Legacy method — kept for compatibility."""
         if self._backbone_frozen and epoch >= freeze_until_epoch:
             for param in self.backbone.parameters():
                 param.requires_grad = True
             self._backbone_frozen = False
-            unfroze_backbone = True
-
         if self._sr_frozen and epoch >= freeze_until_epoch:
             for param in self.sr_module.parameters():
                 param.requires_grad = True
             self._sr_frozen = False
-            unfroze_sr = True
-
-        if unfroze_backbone or unfroze_sr:
-            return True
-        return False
 
     def forward(self, x: torch.Tensor):
         # x: [B, 3, 32, 128]
@@ -559,6 +586,6 @@ class EndToEndLPR(nn.Module):
         seq      = self.pos_encoder(seq)          # [B,  16, 512]       (+ positional)
         out      = self.transformer(seq)          # [B,  16, 512]       (4-layer encoder)
         out      = self.dropout_fc(out)           # dropout before FC
-        logits   = self.fc(out).log_softmax(2)    # [B,  16, NUM_CLASSES]
+        logits   = self.fc(out)                   # [B,  16, NUM_CLASSES]  (raw, CTC loss applies log_softmax)
 
         return sr_img, logits  # (SR for MSE loss, CTC logits for recognition)
