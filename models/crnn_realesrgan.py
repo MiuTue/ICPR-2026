@@ -421,7 +421,7 @@ class ConvProj(nn.Module):
           | AdaptiveAvgPool H->1   -> [B, 512, 1, 16]
           | squeeze(2)             -> [B, 512, 16]
           | permute(0,2,1)         -> [B, 16, 512]
-        Output: [B, T=16, d_model=512]
+        Output: [B, T=32, d_model=512]
 
     NOTE: ConvNeXt output spatial size depends on input resolution.
           This ConvProj handles any H', W' via AdaptiveAvgPool2d((1, None)).
@@ -464,17 +464,18 @@ class EndToEndLPR(nn.Module):
     Full pipeline: Real-ESRGAN (x4) -> ConvNeXt-Tiny -> Transformer -> CTC.
 
     Input:  LR image [B, 3, 32, 128]
-    Output: SR image [B, 3, 128, 512] + CTC logits [B, T=16, NUM_CLASSES]
+    Output: SR image [B, 3, 128, 512] + CTC logits [B, T=32, NUM_CLASSES]
 
     Shape trace:
         [B, 3,  32,  128]          -- RealESRGAN (x4 upscale) --
         -> [B, 3,  128, 512]        SR image (for MSELoss)
-        -> [B, 768,   4,  16]       ConvNeXt-Tiny backbone
-        -> [B, 512,   1,  16]       Conv(768->512) + BN + ReLU + AvgPool H->1
-        -> [B, 512,  16]            squeeze dim 2
-        -> [B,  16, 512]            permute (T=16, d_model=512)
-        -> [B,  16, 512]            PositionalEncoding + TransformerEncoder
-        -> [B,  16, NUM_CLASSES]   FC + LogSoftmax (CTC blank=0)
+        -> [B, 3,  256, 1024]       biliear upsample x2 (for better T)
+        -> [B, 768,   8,  32]       ConvNeXt-Tiny backbone
+        -> [B, 512,   1,  32]       Conv(768->512) + BN + ReLU + AvgPool H->1
+        -> [B, 512,  32]            squeeze dim 2
+        -> [B,  32, 512]            permute (T=32, d_model=512)
+        -> [B,  32, 512]            PositionalEncoding + TransformerEncoder
+        -> [B,  32, NUM_CLASSES]   FC + LogSoftmax (CTC blank=0)
     """
     def __init__(
         self,
@@ -581,11 +582,19 @@ class EndToEndLPR(nn.Module):
     def forward(self, x: torch.Tensor):
         # x: [B, 3, 32, 128]
         sr_img   = self.sr_module(x)              # [B,  3, 128, 512]  (SR image for MSE)
-        features = self.backbone(sr_img)          # [B, 768,   4,  16]  (ConvNeXt features)
-        seq      = self.conv_proj(features)       # [B,  16, 512]       (T=16 timesteps)
-        seq      = self.pos_encoder(seq)          # [B,  16, 512]       (+ positional)
-        out      = self.transformer(seq)          # [B,  16, 512]       (4-layer encoder)
-        out      = self.dropout_fc(out)           # dropout before FC
-        logits   = self.fc(out)                   # [B,  16, NUM_CLASSES]  (raw, CTC loss applies log_softmax)
 
-        return sr_img, logits  # (SR for MSE loss, CTC logits for recognition)
+        # Upample SR ảnh ×2 trước khi vào backbone:
+        # 128×512 → 256×1024 → ConvNeXt stride-32 → [B, 768, 8, 32] → T=32
+        # (thay vì 128×512 → [B, 768, 4, 16] → T=16)
+        sr_img_up = F.interpolate(
+            sr_img, scale_factor=2, mode='bilinear', align_corners=False
+        )                                          # [B, 3, 256, 1024]
+
+        features = self.backbone(sr_img_up)        # [B, 768,   8,  32]  (ConvNeXt features)
+        seq      = self.conv_proj(features)       # [B,  32, 512]       (T=32 timesteps)
+        seq      = self.pos_encoder(seq)          # [B,  32, 512]       (+ positional)
+        out      = self.transformer(seq)          # [B,  32, 512]       (4-layer encoder)
+        out      = self.dropout_fc(out)           # dropout before FC
+        logits   = self.fc(out)                   # [B,  32, NUM_CLASSES]  (raw, CTC loss applies log_softmax)
+
+        return sr_img, logits  # (SR for MSE loss, raw logits for CTC loss)

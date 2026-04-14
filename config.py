@@ -1,4 +1,3 @@
-import os
 import torch
 
 
@@ -31,7 +30,7 @@ class Config:
     SEED = 42
     NUM_WORKERS = 4
     FREEZE_UNTIL_EPOCH = 5    # Initial freeze period
-    LAMBDA_SR = 1.0           # Weight for SR loss (MSE)
+    LAMBDA_SR = 0.3           # Weight for SR loss (MSE); reduced so CTC branch isn't starved
 
     
     # Device

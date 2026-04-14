@@ -85,15 +85,11 @@ def train_pipeline():
         {'params': model.fc.parameters(),          'lr': Config.LR_RECOGNITION},
     ], weight_decay=1e-3)
 
-    scheduler = optim.lr_scheduler.OneCycleLR(
+    scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(
         optimizer,
-        max_lr=[Config.LR_SR, Config.LR_BACKBONE, Config.LR_RECOGNITION, Config.LR_RECOGNITION, Config.LR_RECOGNITION],
-        steps_per_epoch=len(train_loader),
-        epochs=Config.EPOCHS,
-        pct_start=0.16, # Đẩy max learning rate đến sớm ở epoch 5 (0.1 * 50) thay vì đợi đến epoch 15
-        div_factor=25.0, 
-        final_div_factor=1000.0,
-        anneal_strategy='cos'    
+        T_0=10,                  # full cycle every 10 epochs
+        T_mult=1,
+        eta_min=1e-6,            # minimum LR
     )
     scaler = GradScaler()
 
@@ -104,10 +100,10 @@ def train_pipeline():
         # Freeze logic
         if epoch < Config.FREEZE_UNTIL_EPOCH:
             # Ở những epoch đầu, Freeze Backbone (Pre-trained) để Head có thời gian làm quen với việc SR ảnh
-            model.set_freeze_mode(False)
+            model.set_freeze_mode(True)
         else:
             # Mở khoá vĩnh viễn Backbone để finetune toàn hệ thống
-            model.set_freeze_mode(True)
+            model.set_freeze_mode(False)
             if epoch == Config.FREEZE_UNTIL_EPOCH:
                 print(f" 🔓 [Epoch {epoch+1}] Full Pipeline Unfrozen for fine-tuning")
             
@@ -147,8 +143,8 @@ def train_pipeline():
             with autocast('cuda'):
                 # Forward: [B, 3, 128, 512], [B, 16, num_classes]
                 sr_img, logits = model(mixed_lr)
-                
-                # 1. CTC Loss (Apply log_softmax here as EndToEndLPR returns raw logits)
+
+                # 1. CTC Loss (apply log_softmax here — model returns raw logits)
                 log_probs = logits.log_softmax(2).permute(1, 0, 2) # [T, B, C]
                 input_lengths = torch.full(
                     size=(lr_images.size(0),), 
@@ -168,7 +164,6 @@ def train_pipeline():
                 # Total multi-task loss
                 loss = loss_ctc + Config.LAMBDA_SR * loss_sr
 
-            scaler_scale_before = scaler.get_scale()
             scaler.scale(loss).backward()
             
             # Gradient Clipping
@@ -178,8 +173,7 @@ def train_pipeline():
             scaler.step(optimizer)
             scaler.update()
             
-            if scaler.get_scale() >= scaler_scale_before:
-                scheduler.step()
+            scheduler.step()
             
             epoch_ctc_loss += loss_ctc.item()
             epoch_sr_loss += loss_sr.item()
